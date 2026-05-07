@@ -7,15 +7,16 @@ use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use tokio::sync::Semaphore;
+use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
 
-use rustls::crypto::aws_lc_rs;
 use duralumin_core::{Action, EpisodeState};
 use duralumin_downloader::{DownloadResult, Downloader, DownloaderConfig};
 use duralumin_feed::FeedFetcher;
 use duralumin_metadata::write_tags;
 use duralumin_rules::RuleEngine;
 use duralumin_storage::{Db, EpisodeFilter};
+use rustls::crypto::aws_lc_rs;
 
 // ---- CLI types -------------------------------------------------------------
 
@@ -89,9 +90,7 @@ enum EpisodeSub {
         limit: usize,
     },
     /// Re-queue an episode for download (sets state to Matched(Download)).
-    Requeue {
-        id: String,
-    },
+    Requeue { id: String },
 }
 
 // ---- run subcommand --------------------------------------------------------
@@ -180,7 +179,10 @@ async fn main() {
     let cli = Cli::parse();
 
     // Config validate is special — no DB needed
-    if let Command::Config(ConfigArgs { sub: ConfigSub::Validate }) = &cli.command {
+    if let Command::Config(ConfigArgs {
+        sub: ConfigSub::Validate,
+    }) = &cli.command
+    {
         match config::load(cli.config.as_deref()) {
             Ok((_, path)) => {
                 println!("Config OK ({})", path.display());
@@ -224,14 +226,17 @@ async fn main() {
     let filter = EnvFilter::try_new(&log_level).unwrap_or_else(|_| EnvFilter::new("info"));
     match log_format {
         Some(LogFormat::Json) => {
-            tracing_subscriber::fmt().json().with_env_filter(filter).init();
+            tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(filter)
+                .init();
         }
         _ => {
             fmt().with_env_filter(filter).init();
         }
     }
 
-    tracing::info!(path = %config_path.display(), "loaded config");
+    info!(path = %config_path.display(), "loaded config");
 
     let db = match Db::open(&cfg.storage.db()).await {
         Ok(d) => d,
@@ -243,7 +248,10 @@ async fn main() {
 
     match db.count_quarantined().await {
         Ok(0) => {}
-        Ok(n) => tracing::info!(count = n, "quarantined episodes present — run `quarantine list` to review"),
+        Ok(n) => info!(
+            count = n,
+            "quarantined episodes present — run `quarantine list` to review"
+        ),
         Err(e) => tracing::warn!(error = %e, "could not count quarantined episodes"),
     }
 
@@ -292,7 +300,10 @@ async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
 
 async fn cmd_feed_sync(cfg: &config::Config, db: &Db, slugs: Vec<String>) -> Result<()> {
     let engine = build_engine(cfg, db).await?;
-    let fetcher = FeedFetcher::new(&cfg.downloader.user_agent, cfg.downloader.accept_invalid_certs);
+    let fetcher = FeedFetcher::new(
+        &cfg.downloader.user_agent,
+        cfg.downloader.accept_invalid_certs,
+    );
 
     let feeds_to_sync: Vec<&duralumin_rules::config::FeedConfig> = if slugs.is_empty() {
         cfg.feeds.iter().filter(|f| f.enabled).collect()
@@ -313,9 +324,9 @@ async fn cmd_feed_sync(cfg: &config::Config, db: &Db, slugs: Vec<String>) -> Res
             .with_context(|| format!("upsert feed {}", feed_cfg.slug))?;
         feed.id = feed_id;
 
-        tracing::info!(slug = %feed.slug, "syncing feed");
+        info!(slug = %feed.slug, "syncing feed");
 
-        let (meta, episodes) = match fetcher.fetch(&feed).await {
+        let (meta, mut episodes) = match fetcher.fetch(&feed).await {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!(slug = %feed.slug, error = %e, "feed fetch failed");
@@ -331,20 +342,28 @@ async fn cmd_feed_sync(cfg: &config::Config, db: &Db, slugs: Vec<String>) -> Res
         feed.last_fetched_at = Some(Utc::now());
         db.upsert_feed(&feed).await?;
 
-        tracing::info!(slug = %feed.slug, count = episodes.len(), "fetched episodes");
-
-        for mut ep in episodes {
+        let mut new_episodes = 0;
+        for ep in &mut episodes {
             ep.feed_id = feed_id;
-            db.upsert_episode(&ep).await?;
+            let is_new = db.upsert_episode(&ep).await?;
 
-            // Only evaluate rules on Discovered episodes
-            if matches!(ep.state, EpisodeState::Discovered) {
+            // Only evaluate rules on brand-new episodes (first time seen in DB).
+            // Existing episodes keep their current state so Complete/Failed/
+            // Quarantined episodes are never re-queued by a sync.
+            if is_new {
+                new_episodes += 1;
                 let action = engine.evaluate(&ep, &feed);
+                info!(episode_id = %ep.id, title = %ep.title, ?action, "new episode, rule evaluated");
                 let new_state = EpisodeState::Matched(action);
                 db.update_episode_state(&ep.id, &new_state).await?;
-                tracing::debug!(episode_id = %ep.id, ?action, "rule evaluated");
             }
         }
+        info!(
+            slug = %feed.slug,
+            total = episodes.len(),
+            new = new_episodes,
+            "feed sync complete"
+        );
     }
 
     Ok(())
@@ -426,7 +445,7 @@ async fn cmd_run(cfg: &config::Config, db: &Db, once: bool) -> Result<()> {
             break;
         }
         // TODO: configurable poll interval / SIGHUP reload
-        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(100)).await;
     }
     Ok(())
 }
@@ -460,7 +479,7 @@ async fn cmd_download(cfg: &config::Config, db: &Db, ids: Vec<String>) -> Result
     if !library.exists() {
         std::fs::create_dir_all(&library)
             .with_context(|| format!("creating library path {}", library.display()))?;
-        tracing::info!(path = %library.display(), "created library directory");
+        info!(path = %library.display(), "created library directory");
     }
 
     let dl_cfg = DownloaderConfig {
@@ -607,8 +626,10 @@ async fn cmd_rules_check(cfg: &config::Config, db: &Db, slug: &str) -> Result<()
 /// Build a `RuleEngine` from the loaded config, upserting feeds first so they
 /// have real IDs.
 async fn build_engine(cfg: &config::Config, db: &Db) -> Result<RuleEngine> {
-    let mut per_feed: Vec<(duralumin_core::FeedId, Vec<duralumin_rules::config::RuleConfig>)> =
-        Vec::new();
+    let mut per_feed: Vec<(
+        duralumin_core::FeedId,
+        Vec<duralumin_rules::config::RuleConfig>,
+    )> = Vec::new();
 
     for feed_cfg in &cfg.feeds {
         let feed = feed_cfg.to_feed();
@@ -630,7 +651,10 @@ async fn build_engine(cfg: &config::Config, db: &Db) -> Result<RuleEngine> {
         per_feed.push((id, rules));
     }
 
-    let pairs: Vec<(duralumin_core::FeedId, &[duralumin_rules::config::RuleConfig])> = per_feed
+    let pairs: Vec<(
+        duralumin_core::FeedId,
+        &[duralumin_rules::config::RuleConfig],
+    )> = per_feed
         .iter()
         .map(|(id, rules)| (*id, rules.as_slice()))
         .collect();

@@ -1,13 +1,13 @@
 use std::path::Path;
 
-use lofty::config::WriteOptions;
+use chrono::Datelike as _;
+use lofty::config::{ParseOptions, ParsingMode, WriteOptions};
 use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::prelude::*;
+use lofty::probe::Probe;
 use lofty::tag::{ItemKey, ItemValue, TagItem};
-use chrono::Datelike as _;
 
 use duralumin_core::{Episode, Feed};
-use tracing::{debug, info};
 
 // ---- Error -----------------------------------------------------------------
 
@@ -21,18 +21,18 @@ pub enum MetadataError {
 
 /// Write ID3/Vorbis/MP4 tags to a downloaded audio file.
 ///
-/// `cover_art` is the raw JPEG or PNG bytes for the cover image.
-/// Pass `None` to skip embedding art. Unsupported formats are logged and
-/// silently skipped rather than returning an error.
+/// Uses BestAttempt parsing so existing malformed tags (e.g. non-standard
+/// TDRC timestamps written by other tools) don't abort the write.
+/// `cover_art` is raw JPEG or PNG bytes; pass `None` to skip art embedding.
 pub fn write_tags(
     path: &Path,
     episode: &Episode,
     feed: &Feed,
     cover_art: Option<&[u8]>,
 ) -> Result<(), MetadataError> {
-    info!("Writing metadata for {} to {}", episode.title, path.display());
-    debug!("Metadata details: {:#?}", episode);
-    let mut tagged_file = lofty::read_from_path(path)?;
+    let mut tagged_file = Probe::open(path)?
+        .options(ParseOptions::new().parsing_mode(ParsingMode::BestAttempt))
+        .read()?;
 
     let has_primary = tagged_file.primary_tag().is_some();
     let tag = if has_primary {
@@ -52,26 +52,26 @@ pub fn write_tags(
 
     let artist = feed.title.as_deref().unwrap_or(&feed.slug).to_string();
 
+    // Title: original episode title from the RSS feed (not the sanitized filename).
     tag.set_title(episode.title.clone());
     tag.set_artist(artist.clone());
     tag.set_album(artist);
-    // Year as plain integer string — understood by ID3v2.3 (TYER), Vorbis (YEAR), MP4 (©day).
+
+    // Year: TYER (ID3v2.3), YEAR (Vorbis), ©day (MP4).
     tag.insert(TagItem::new(
         ItemKey::Year,
         ItemValue::Text(episode.pub_date.year().to_string()),
     ));
-    info!("Timestamp for {}: {}", episode.title, episode.pub_date);
-    // Full ISO date for ID3v2.4-aware players (TDRC).
+    // Full date: TDRC (ID3v2.4-aware players).
     tag.insert(TagItem::new(
         ItemKey::RecordingDate,
         ItemValue::Text(episode.pub_date.format("%Y-%m-%d").to_string()),
     ));
 
     if let Some(desc) = &episode.description {
-        let truncated = truncate_utf8(desc, 8192);
         tag.insert(TagItem::new(
             ItemKey::Comment,
-            ItemValue::Text(truncated),
+            ItemValue::Text(truncate_utf8(desc, 8192)),
         ));
     }
 
@@ -84,6 +84,12 @@ pub fn write_tags(
         tag.push_picture(pic);
     }
 
+    tracing::info!(
+        path = %path.display(),
+        title = %episode.title,
+        year = episode.pub_date.year(),
+        "wrote tags"
+    );
     tagged_file.save_to_path(path, WriteOptions::default())?;
     Ok(())
 }

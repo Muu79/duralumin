@@ -156,22 +156,20 @@ impl Db {
 
     // ---- Episode operations ----------------------------------------------------
 
-    /// Insert a newly-discovered episode.  On conflict (same sha256 id), update
-    /// only metadata fields — the `state` column is intentionally left alone so
-    /// we never regress a download back to Discovered.
-    pub async fn upsert_episode(&self, ep: &Episode) -> Result<()> {
+    /// Insert a newly-discovered episode, returning `true` if the row was
+    /// created for the first time.  On conflict (same id), only mutable
+    /// metadata fields are updated — `state` is intentionally left alone so
+    /// we never regress a Complete/Failed episode back to Discovered.
+    pub async fn upsert_episode(&self, ep: &Episode) -> Result<bool> {
         let state_json = serde_json::to_string(&ep.state)?;
-        sqlx::query(
-            "INSERT INTO episodes
+
+        // INSERT OR IGNORE: skip if already present; rows_affected tells us
+        // whether this was a genuine new episode.
+        let inserted = sqlx::query(
+            "INSERT OR IGNORE INTO episodes
                (id, feed_id, guid, title, description, pub_date, duration_secs,
                 enclosure_url, enclosure_size, enclosure_mime, state, image_url)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(id) DO UPDATE SET
-               title          = excluded.title,
-               description    = excluded.description,
-               enclosure_size = excluded.enclosure_size,
-               enclosure_mime = excluded.enclosure_mime,
-               image_url      = excluded.image_url",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(ep.id.as_str())
         .bind(ep.feed_id.0)
@@ -186,8 +184,32 @@ impl Db {
         .bind(&state_json)
         .bind(ep.image_url.as_ref().map(Url::as_str))
         .execute(&self.pool)
-        .await?;
-        Ok(())
+        .await?
+        .rows_affected()
+            > 0;
+
+        if !inserted {
+            // Update only mutable metadata for known episodes.
+            sqlx::query(
+                "UPDATE episodes SET
+                   title          = ?,
+                   description    = ?,
+                   enclosure_size = ?,
+                   enclosure_mime = ?,
+                   image_url      = ?
+                 WHERE id = ?",
+            )
+            .bind(&ep.title)
+            .bind(&ep.description)
+            .bind(ep.enclosure_size.map(|s| s as i64))
+            .bind(&ep.enclosure_mime)
+            .bind(ep.image_url.as_ref().map(Url::as_str))
+            .bind(ep.id.as_str())
+            .execute(&self.pool)
+            .await?;
+        }
+
+        Ok(inserted)
     }
 
     pub async fn get_episode(&self, id: &EpisodeId) -> Result<Option<Episode>> {
