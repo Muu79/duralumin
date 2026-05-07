@@ -2,17 +2,20 @@
 # Full reference: see examples/config.toml in the source tree
 
 [storage]
-# Directory where downloaded audio files are saved
-library_path = "/podcasts"
+# Base directory. Everything else defaults relative to this.
+dir = "/podcasts"
 
-# SQLite database file — keep it on the same filesystem as library_path
-state_db = "/podcasts/.duralumin.db"
+# Optional overrides (uncomment to customise):
+# library_path = "/podcasts/podcasts"    # defaults to {dir}/podcasts
+# state_db     = "/podcasts/db/duralumin.db"  # defaults to {dir}/db/duralumin.db
 
 [downloader]
 concurrent_downloads = 2
 attempt_timeout      = "20m"
 max_retries          = 3
 backoff_base         = "30s"
+# Set to true only for self-hosted feeds with self-signed certificates
+# accept_invalid_certs = false
 
 [defaults]
 # "skip"     — nothing downloads unless a rule explicitly says download (recommended)

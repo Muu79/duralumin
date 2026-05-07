@@ -1,0 +1,30 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        
+        {
+            "name": "Debug",
+            "type": "gdb",
+            "request": "launch",
+            "target": "./target/debug/duralumin",
+            "cwd": "${workspaceRoot}",
+            "valuesFormatting": "parseText",
+            "arguments": "run"
+        },
+        {
+            "name": "Debug executable 'duralumin'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=duralumin",
+                    "--package=duralumin-cli",
+                    "--",
+                    "run"
+                ]
+            },
+            "args": []
+        }
+    ]
+}

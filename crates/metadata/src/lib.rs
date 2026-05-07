@@ -4,8 +4,10 @@ use lofty::config::WriteOptions;
 use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::prelude::*;
 use lofty::tag::{ItemKey, ItemValue, TagItem};
+use chrono::Datelike as _;
 
 use duralumin_core::{Episode, Feed};
+use tracing::{debug, info};
 
 // ---- Error -----------------------------------------------------------------
 
@@ -28,6 +30,8 @@ pub fn write_tags(
     feed: &Feed,
     cover_art: Option<&[u8]>,
 ) -> Result<(), MetadataError> {
+    info!("Writing metadata for {} to {}", episode.title, path.display());
+    debug!("Metadata details: {:#?}", episode);
     let mut tagged_file = lofty::read_from_path(path)?;
 
     let has_primary = tagged_file.primary_tag().is_some();
@@ -47,14 +51,20 @@ pub fn write_tags(
     };
 
     let artist = feed.title.as_deref().unwrap_or(&feed.slug).to_string();
-    let date_str = episode.pub_date.format("%Y-%m-%d").to_string();
 
     tag.set_title(episode.title.clone());
     tag.set_artist(artist.clone());
     tag.set_album(artist);
+    // Year as plain integer string — understood by ID3v2.3 (TYER), Vorbis (YEAR), MP4 (©day).
+    tag.insert(TagItem::new(
+        ItemKey::Year,
+        ItemValue::Text(episode.pub_date.year().to_string()),
+    ));
+    info!("Timestamp for {}: {}", episode.title, episode.pub_date);
+    // Full ISO date for ID3v2.4-aware players (TDRC).
     tag.insert(TagItem::new(
         ItemKey::RecordingDate,
-        ItemValue::Text(date_str),
+        ItemValue::Text(episode.pub_date.format("%Y-%m-%d").to_string()),
     ));
 
     if let Some(desc) = &episode.description {

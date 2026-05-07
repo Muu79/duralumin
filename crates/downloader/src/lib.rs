@@ -17,6 +17,7 @@ pub struct DownloaderConfig {
     pub max_retries: u8,
     pub backoff_base: Duration,
     pub user_agent: String,
+    pub accept_invalid_certs: bool,
 }
 
 // ---- Error -----------------------------------------------------------------
@@ -71,8 +72,12 @@ impl Downloader {
         let client = reqwest::Client::builder()
             .user_agent(&config.user_agent)
             .timeout(config.attempt_timeout)
+            .danger_accept_invalid_certs(config.accept_invalid_certs)
             .build()
             .expect("failed to build HTTP client");
+        if config.accept_invalid_certs {
+            tracing::warn!("TLS certificate validation disabled — only use this for trusted local servers");
+        }
         Self { client, config }
     }
 
@@ -87,6 +92,14 @@ impl Downloader {
         let mut last_err: Option<DownloadError> = None;
 
         for attempt in 1..=max {
+            tracing::info!(
+                episode_id = %episode.id,
+                title = %episode.title,
+                url  = %episode.enclosure_url,
+                attempt,
+                max,
+                "starting download attempt"
+            );
             on_state(EpisodeState::Downloading { attempt, started_at: Utc::now() });
 
             let result = tokio::time::timeout(
@@ -98,21 +111,35 @@ impl Downloader {
             match result {
                 Ok(Ok(r)) => return Ok(r),
                 Ok(Err(e)) => {
-                    tracing::warn!(
-                        episode_id = %episode.id,
-                        attempt,
-                        error = %e,
-                        "download attempt failed"
-                    );
                     if attempt < max {
+                        tracing::warn!(
+                            episode_id = %episode.id,
+                            attempt,
+                            max,
+                            error = %e,
+                            "download attempt failed, will retry"
+                        );
                         on_state(EpisodeState::Failed {
                             last_error: e.to_string(),
                             attempts: attempt,
                         });
                         let delay = backoff(self.config.backoff_base, attempt);
+                        tracing::debug!(
+                            episode_id = %episode.id,
+                            delay_secs = delay.as_secs_f64(),
+                            "backing off before next attempt"
+                        );
                         tokio::time::sleep(delay).await;
                         last_err = Some(e);
                     } else {
+                        tracing::error!(
+                            episode_id = %episode.id,
+                            title = %episode.title,
+                            total_attempts = attempt,
+                            reason = e.reason(),
+                            error = %e,
+                            "download failed after all retries, quarantining"
+                        );
                         let reason = e.reason().to_string();
                         let detail = e.to_string();
                         on_state(EpisodeState::Quarantined {
@@ -124,20 +151,34 @@ impl Downloader {
                 }
                 Err(_elapsed) => {
                     let e = DownloadError::Timeout(self.config.attempt_timeout);
-                    tracing::warn!(
-                        episode_id = %episode.id,
-                        attempt,
-                        "download timed out"
-                    );
                     if attempt < max {
+                        tracing::warn!(
+                            episode_id = %episode.id,
+                            attempt,
+                            max,
+                            timeout_secs = self.config.attempt_timeout.as_secs(),
+                            "download timed out, will retry"
+                        );
                         on_state(EpisodeState::Failed {
                             last_error: e.to_string(),
                             attempts: attempt,
                         });
                         let delay = backoff(self.config.backoff_base, attempt);
+                        tracing::debug!(
+                            episode_id = %episode.id,
+                            delay_secs = delay.as_secs_f64(),
+                            "backing off before next attempt"
+                        );
                         tokio::time::sleep(delay).await;
                         last_err = Some(e);
                     } else {
+                        tracing::error!(
+                            episode_id = %episode.id,
+                            title = %episode.title,
+                            total_attempts = attempt,
+                            timeout_secs = self.config.attempt_timeout.as_secs(),
+                            "download timed out after all retries, quarantining"
+                        );
                         let reason = e.reason().to_string();
                         let detail = e.to_string();
                         on_state(EpisodeState::Quarantined {
@@ -274,17 +315,16 @@ impl Downloader {
 // ---- Helpers ---------------------------------------------------------------
 
 fn build_filename(episode: &Episode, dest_dir: &Path) -> PathBuf {
-    let date = episode.pub_date.format("%Y-%m-%d");
     let slug = sanitize_title(&episode.title);
     let ext = ext_from_mime(
         episode.enclosure_mime.as_deref(),
         episode.enclosure_url.as_str(),
     );
-    let name = format!("{date}-{slug}.{ext}");
+    let name = format!("{slug}.{ext}");
     let candidate = dest_dir.join(&name);
     if candidate.exists() {
         let short = episode.id.short();
-        dest_dir.join(format!("{date}-{slug}-{short}.{ext}"))
+        dest_dir.join(format!("{slug}-{short}.{ext}"))
     } else {
         candidate
     }

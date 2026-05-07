@@ -5,12 +5,12 @@
 # ── Storage ──────────────────────────────────────────────────────────────────
 
 [storage]
-# Where downloaded audio files are written.
-library_path = "/podcasts"
+# Base directory — all paths default relative to this.
+dir = "/podcasts"
 
-# SQLite state file. Keep it on the same filesystem as library_path so that
-# the atomic .part → final rename stays on one device.
-state_db = "/podcasts/.duralumin.db"
+# Optional overrides:
+# library_path = "/podcasts/podcasts"         # defaults to {dir}/podcasts
+# state_db     = "/podcasts/db/duralumin.db"  # defaults to {dir}/db/duralumin.db
 
 
 # ── Downloader ───────────────────────────────────────────────────────────────

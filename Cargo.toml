@@ -29,7 +29,7 @@ duralumin-transcode  = { path = "crates/transcode" }
 tokio = { version = "1", features = ["full"] }
 
 # HTTP
-reqwest = { version = "^0.13.x", default-features = false, features = ["stream"] }
+reqwest = { version = "^0.13.x", default-features = false, features = ["stream", "rustls"] }
 
 # RSS parsing
 feed-rs = "2"
@@ -60,5 +60,6 @@ hex       = "^0.4"
 url       = { version = "2", features = ["serde"] }
 bytesize  = { version = "^2.x", features = ["serde"] }
 humantime = "2"
+rustls    = { version = "0.23", features = ["aws-lc-rs"], default-features = false }
 anyhow    = "1"
 thiserror = "2"

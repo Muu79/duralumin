@@ -58,12 +58,14 @@ pub struct Db {
 
 impl Db {
     pub async fn open(path: &Path) -> Result<Self> {
+        tracing::info!(path = %path.display(), "opening database");
         let opts = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal);
         let pool = SqlitePool::connect_with(opts).await?;
         sqlx::migrate!().run(&pool).await?;
+        tracing::info!(path = %path.display(), "database ready (migrations applied)");
         Ok(Self { pool })
     }
 
@@ -255,6 +257,24 @@ impl Db {
                 _ => false,
             })
             .collect())
+    }
+
+    /// Count episodes currently in the Quarantined state.
+    pub async fn count_quarantined(&self) -> Result<usize> {
+        let rows = sqlx::query("SELECT state FROM episodes")
+            .fetch_all(&self.pool)
+            .await?;
+        let count = rows
+            .iter()
+            .filter(|row| {
+                row.try_get::<String, _>("state")
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    .map(|v| v.get("Quarantined").is_some())
+                    .unwrap_or(false)
+            })
+            .count();
+        Ok(count)
     }
 
     // ---- Attempt operations ----------------------------------------------------

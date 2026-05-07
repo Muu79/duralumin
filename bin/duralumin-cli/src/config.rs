@@ -21,9 +21,9 @@ fn default_attempt_timeout() -> Duration { Duration::from_secs(20 * 60) }
 fn default_max_retries() -> u8 { 3 }
 fn default_backoff_base() -> Duration { Duration::from_secs(30) }
 fn default_user_agent() -> String {
-    format!("duralumin/{} (+https://github.com/yourname/duralumin)", env!("CARGO_PKG_VERSION"))
+    format!("duralumin/{} (+https://github.com/Muu79/duralumin)", env!("CARGO_PKG_VERSION"))
 }
-fn default_log_format() -> String { "pretty".into() }
+fn default_accept_invalid_certs() -> bool { false }
 fn default_log_level() -> String { "info".into() }
 fn default_action_on_no_match() -> Action { Action::Skip }
 
@@ -63,8 +63,21 @@ pub struct Config {
 
 #[derive(Debug, Deserialize)]
 pub struct StorageConfig {
-    pub library_path: PathBuf,
-    pub state_db: PathBuf,
+    /// Base directory. `library_path` and `state_db` default relative to this.
+    pub dir: PathBuf,
+    /// Override for the podcast library root. Defaults to `{dir}/podcasts`.
+    pub library_path: Option<PathBuf>,
+    /// Override for the SQLite database file. Defaults to `{dir}/db/duralumin.db`.
+    pub state_db: Option<PathBuf>,
+}
+
+impl StorageConfig {
+    pub fn library(&self) -> PathBuf {
+        self.library_path.clone().unwrap_or_else(|| self.dir.join("podcasts"))
+    }
+    pub fn db(&self) -> PathBuf {
+        self.state_db.clone().unwrap_or_else(|| self.dir.join("db").join("duralumin.db"))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -79,6 +92,8 @@ pub struct DownloaderConfig {
     pub backoff_base: Duration,
     #[serde(default = "default_user_agent")]
     pub user_agent: String,
+    #[serde(default = "default_accept_invalid_certs")]
+    pub accept_invalid_certs: bool,
 }
 
 impl Default for DownloaderConfig {
@@ -89,6 +104,7 @@ impl Default for DownloaderConfig {
             max_retries: default_max_retries(),
             backoff_base: default_backoff_base(),
             user_agent: default_user_agent(),
+            accept_invalid_certs: default_accept_invalid_certs(),
         }
     }
 }
@@ -108,21 +124,19 @@ impl Default for DefaultsConfig {
 #[derive(Debug, Deserialize)]
 pub struct LoggingConfig {
     /// `"pretty"` (default, colored) or `"json"` (one object per line).
-    #[serde(default = "default_log_format")]
-    pub format: String,
     #[serde(default = "default_log_level")]
     pub level: String,
 }
 
 impl Default for LoggingConfig {
     fn default() -> Self {
-        Self { format: default_log_format(), level: default_log_level() }
+        Self { level: default_log_level() }
     }
 }
 
 // ---- Load + validate -------------------------------------------------------
 
-pub fn load(override_path: Option<&Path>) -> Result<Config, ConfigError> {
+pub fn load(override_path: Option<&Path>) -> Result<(Config, PathBuf), ConfigError> {
     let path = match resolve_path(override_path) {
         Ok(p) => p,
         Err(ConfigError::NotFound) => {
@@ -137,7 +151,7 @@ pub fn load(override_path: Option<&Path>) -> Result<Config, ConfigError> {
         .map_err(|e| ConfigError::Io(path.clone(), e))?;
     let cfg: Config = toml::from_str(&text)?;
     validate(&cfg)?;
-    Ok(cfg)
+    Ok((cfg, path))
 }
 
 fn validate(cfg: &Config) -> Result<(), ConfigError> {

@@ -9,6 +9,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use tokio::sync::Semaphore;
 use tracing_subscriber::{EnvFilter, fmt};
 
+use rustls::crypto::aws_lc_rs;
 use duralumin_core::{Action, EpisodeState};
 use duralumin_downloader::{DownloadResult, Downloader, DownloaderConfig};
 use duralumin_feed::FeedFetcher;
@@ -172,13 +173,17 @@ enum DbSub {
 
 #[tokio::main]
 async fn main() {
+    // rustls 0.23 requires an explicit crypto provider; install aws-lc-rs before
+    // any TLS connection is attempted (reqwest 0.13 does not do this automatically).
+    aws_lc_rs::default_provider().install_default().ok();
+
     let cli = Cli::parse();
 
     // Config validate is special — no DB needed
     if let Command::Config(ConfigArgs { sub: ConfigSub::Validate }) = &cli.command {
         match config::load(cli.config.as_deref()) {
-            Ok(_) => {
-                println!("Config OK");
+            Ok((_, path)) => {
+                println!("Config OK ({})", path.display());
                 std::process::exit(0);
             }
             Err(config::ConfigError::Generated(path)) => {
@@ -194,8 +199,8 @@ async fn main() {
         }
     }
 
-    let cfg = match config::load(cli.config.as_deref()) {
-        Ok(c) => c,
+    let (cfg, config_path) = match config::load(cli.config.as_deref()) {
+        Ok(pair) => pair,
         Err(config::ConfigError::Generated(path)) => {
             println!("No config found — created a default at:");
             println!("  {}", path.display());
@@ -226,13 +231,21 @@ async fn main() {
         }
     }
 
-    let db = match Db::open(&cfg.storage.state_db).await {
+    tracing::info!(path = %config_path.display(), "loaded config");
+
+    let db = match Db::open(&cfg.storage.db()).await {
         Ok(d) => d,
         Err(e) => {
             tracing::error!(error = %e, "failed to open database");
             std::process::exit(1);
         }
     };
+
+    match db.count_quarantined().await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(count = n, "quarantined episodes present — run `quarantine list` to review"),
+        Err(e) => tracing::warn!(error = %e, "could not count quarantined episodes"),
+    }
 
     if let Err(e) = run(cli.command, &cfg, &db).await {
         eprintln!("Error: {e:#}");
@@ -279,7 +292,7 @@ async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
 
 async fn cmd_feed_sync(cfg: &config::Config, db: &Db, slugs: Vec<String>) -> Result<()> {
     let engine = build_engine(cfg, db).await?;
-    let fetcher = FeedFetcher::new(&cfg.downloader.user_agent);
+    let fetcher = FeedFetcher::new(&cfg.downloader.user_agent, cfg.downloader.accept_invalid_certs);
 
     let feeds_to_sync: Vec<&duralumin_rules::config::FeedConfig> = if slugs.is_empty() {
         cfg.feeds.iter().filter(|f| f.enabled).collect()
@@ -443,16 +456,23 @@ async fn cmd_download(cfg: &config::Config, db: &Db, ids: Vec<String>) -> Result
         return Ok(());
     }
 
+    let library = cfg.storage.library();
+    if !library.exists() {
+        std::fs::create_dir_all(&library)
+            .with_context(|| format!("creating library path {}", library.display()))?;
+        tracing::info!(path = %library.display(), "created library directory");
+    }
+
     let dl_cfg = DownloaderConfig {
         concurrent_downloads: cfg.downloader.concurrent_downloads,
         attempt_timeout: cfg.downloader.attempt_timeout,
         max_retries: cfg.downloader.max_retries,
         backoff_base: cfg.downloader.backoff_base,
         user_agent: cfg.downloader.user_agent.clone(),
+        accept_invalid_certs: cfg.downloader.accept_invalid_certs,
     };
     let downloader = Arc::new(Downloader::new(dl_cfg));
     let semaphore = Arc::new(Semaphore::new(cfg.downloader.concurrent_downloads as usize));
-    let library = cfg.storage.library_path.clone();
 
     let mut handles = Vec::new();
 
@@ -476,10 +496,17 @@ async fn cmd_download(cfg: &config::Config, db: &Db, ids: Vec<String>) -> Result
                 }
             };
 
+            // Each feed gets its own subdirectory under the library root.
+            let feed_dir = dest.join(&feed.slug);
+            if let Err(e) = tokio::fs::create_dir_all(&feed_dir).await {
+                tracing::error!(episode_id = %ep.id, path = %feed_dir.display(), error = %e, "failed to create feed directory");
+                return;
+            }
+
             let ep_id = ep.id.clone();
             let local_db2 = local_db;
             let result = dl
-                .download(&ep, &dest, |state| {
+                .download(&ep, &feed_dir, |state| {
                     // Fire-and-forget state updates from the closure
                     let id = ep_id.clone();
                     tracing::debug!(episode_id = %id, %state, "state update");

@@ -32,9 +32,10 @@ pub struct FeedFetcher {
 }
 
 impl FeedFetcher {
-    pub fn new(user_agent: &str) -> Self {
+    pub fn new(user_agent: &str, accept_invalid_certs: bool) -> Self {
         let client = reqwest::Client::builder()
             .user_agent(user_agent)
+            .danger_accept_invalid_certs(accept_invalid_certs)
             .build()
             .expect("failed to build HTTP client");
         Self { client }
@@ -45,6 +46,13 @@ impl FeedFetcher {
     /// Returns `(meta, episodes)` where `episodes` is empty on 304 Not Modified.
     /// In the 304 case, `meta` contains the feed's existing etag/last_modified.
     pub async fn fetch(&self, feed: &Feed) -> Result<(FeedMeta, Vec<Episode>)> {
+        tracing::info!(
+            slug = %feed.slug,
+            url  = %feed.url,
+            cached = feed.etag.is_some() || feed.last_modified.is_some(),
+            "fetching feed"
+        );
+
         let mut rb = self.client.get(feed.url.as_str());
         if let Some(ref etag) = feed.etag {
             rb = rb.header("If-None-Match", etag.as_str());
@@ -57,6 +65,7 @@ impl FeedFetcher {
 
         // 304 Not Modified — nothing changed
         if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+            tracing::debug!(slug = %feed.slug, "feed not modified (304), skipping parse");
             return Ok((
                 FeedMeta {
                     title: None,
@@ -104,11 +113,17 @@ impl FeedFetcher {
             image_url,
         };
 
-        let episodes = parsed
+        let episodes: Vec<Episode> = parsed
             .entries
             .iter()
             .filter_map(|entry| entry_to_episode(entry, feed))
             .collect();
+
+        tracing::info!(
+            slug = %feed.slug,
+            episode_count = episodes.len(),
+            "parsed feed"
+        );
 
         Ok((meta, episodes))
     }

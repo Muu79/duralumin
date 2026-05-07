@@ -25,4 +25,5 @@ humantime          = { workspace = true }
 thiserror          = { workspace = true }
 chrono             = { workspace = true }
 reqwest            = { workspace = true }
+rustls             = { workspace = true }
 anyhow             = { workspace = true }
