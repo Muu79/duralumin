@@ -1,0 +1,64 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/feed",
+    "crates/rules",
+    "crates/downloader",
+    "crates/metadata",
+    "crates/storage",
+    "crates/transcode",
+    "bin/duralumin-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+# Internal crates
+duralumin-core       = { path = "crates/core" }
+duralumin-feed       = { path = "crates/feed" }
+duralumin-rules      = { path = "crates/rules" }
+duralumin-downloader = { path = "crates/downloader" }
+duralumin-metadata   = { path = "crates/metadata" }
+duralumin-storage    = { path = "crates/storage" }
+duralumin-transcode  = { path = "crates/transcode" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP
+reqwest = { version = "^0.13.x", default-features = false, features = ["stream"] }
+
+# RSS parsing
+feed-rs = "2"
+
+# Database
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "tls-rustls", "migrate", "chrono"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Serialisation
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml       = "^1.1.x"
+
+# Logging / tracing
+tracing            = "^0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Audio tags
+lofty = "^0.24.x"
+
+# Utilities
+regex     = "^1"
+chrono    = { version = "0.4", features = ["serde"] }
+sha2      = "0.11.x"
+hex       = "^0.4"
+url       = { version = "2", features = ["serde"] }
+bytesize  = { version = "^2.x", features = ["serde"] }
+humantime = "2"
+anyhow    = "1"
+thiserror = "2"

@@ -1,0 +1,24 @@
+[package]
+name = "duralumin-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "duralumin"
+path = "src/main.rs"
+
+[dependencies]
+duralumin-core       = { workspace = true }
+duralumin-feed       = { workspace = true }
+duralumin-rules      = { workspace = true }
+duralumin-downloader = { workspace = true }
+duralumin-metadata   = { workspace = true }
+duralumin-storage    = { workspace = true }
+clap               = { workspace = true }
+tokio              = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+toml               = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+anyhow             = { workspace = true }

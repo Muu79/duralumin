@@ -1,0 +1,15 @@
+[package]
+name = "duralumin-feed"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+duralumin-core = { workspace = true }
+reqwest        = { workspace = true }
+feed-rs        = { workspace = true }
+tokio          = { workspace = true }
+url            = { workspace = true }
+chrono         = { workspace = true }
+anyhow         = { workspace = true }
+thiserror      = { workspace = true }
+tracing        = { workspace = true }

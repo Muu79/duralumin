@@ -1,0 +1,13 @@
+[package]
+name = "duralumin-rules"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+duralumin-core = { workspace = true }
+serde          = { workspace = true }
+regex          = { workspace = true }
+bytesize       = { workspace = true }
+humantime      = { workspace = true }
+chrono         = { workspace = true }
+thiserror      = { workspace = true }
