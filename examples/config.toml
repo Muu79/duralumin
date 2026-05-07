@@ -1,0 +1,152 @@
+# duralumin config — annotated example
+# Default path: ~/.config/duralumin/config.toml
+# Override:     --config <path>  or  $DURALUMIN_CONFIG
+
+# ── Storage ──────────────────────────────────────────────────────────────────
+
+[storage]
+# Where downloaded audio files are written.
+library_path = "/podcasts"
+
+# SQLite state file. Keep it on the same filesystem as library_path so that
+# the atomic .part → final rename stays on one device.
+state_db = "/podcasts/.duralumin.db"
+
+
+# ── Downloader ───────────────────────────────────────────────────────────────
+
+[downloader]
+# Maximum simultaneous downloads. 2 is safe for home broadband.
+concurrent_downloads = 2
+
+# Timeout for a single HTTP attempt, including streaming the body.
+# Large files on slow connections may need more than 20m.
+attempt_timeout = "20m"
+
+# Total attempts before an episode is quarantined.
+max_retries = 3
+
+# Base for the exponential back-off between retries (±25 % jitter applied).
+# Retry delays: ~30s, ~60s, ~120s with default settings.
+backoff_base = "30s"
+
+# Sent as the HTTP User-Agent header. Be identifiable — feeds may block
+# generic agents.
+user_agent = "duralumin/0.1.0 (+https://github.com/yourname/duralumin)"
+
+
+# ── Defaults ─────────────────────────────────────────────────────────────────
+
+[defaults]
+# What happens when no rule matches an episode.
+# "skip" (recommended) — opt-in model, only download what you explicitly want.
+# "download"           — opt-out model, download everything unless a rule says otherwise.
+action_on_no_match = "skip"
+
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+
+[logging]
+# "pretty" — human-readable colored output (good for interactive use / systemd journal)
+# "json"   — one JSON object per line (good for log aggregators like Loki)
+format = "pretty"
+
+# Standard log levels: error, warn, info, debug, trace
+level = "info"
+
+
+# ── Global rules ─────────────────────────────────────────────────────────────
+# Applied after per-feed rules. Useful for cross-feed policies.
+
+# Example: skip anything shorter than 5 minutes (likely a trailer or ad)
+[[global_rules]]
+name     = "skip-trailers"
+priority = 0
+action   = "skip"
+[global_rules.match]
+kind  = "duration_max"
+value = "5m"
+
+# Example: skip anything over 500 MB (probably a video feed misclassified as audio)
+[[global_rules]]
+name     = "skip-huge-files"
+priority = 10
+action   = "skip"
+[global_rules.match]
+kind  = "episode_size_max"
+value = "500 MB"
+
+
+# ── Feeds ────────────────────────────────────────────────────────────────────
+# Each [[feeds]] block is one RSS/Atom feed.
+# slug      — filesystem-safe identifier; used in log output. Must be unique.
+# poll_interval — how often `run` (without --once) re-checks this feed.
+#               Not used when running via cron/systemd timer (use --once there).
+
+# ── Feed: download everything ─────────────────────────────────────────────────
+
+[[feeds]]
+url           = "https://feeds.example.com/my-favourite-podcast.rss"
+slug          = "my-favourite-podcast"
+poll_interval = "1h"
+
+[[feeds.rules]]
+name   = "download-all"
+priority = 0
+action = "download"
+[feeds.rules.match]
+kind = "always"
+
+
+# ── Feed: only recent episodes ────────────────────────────────────────────────
+
+[[feeds]]
+url           = "https://feeds.example.com/news-briefing.rss"
+slug          = "news-briefing"
+poll_interval = "30m"
+
+# Only download episodes published after a specific date.
+# Useful to avoid backfilling hundreds of old episodes on first run.
+[[feeds.rules]]
+name     = "only-recent"
+priority = 0
+action   = "download"
+[feeds.rules.match]
+kind = "published_after"
+date = "2024-01-01T00:00:00Z"
+
+
+# ── Feed: filter by title ─────────────────────────────────────────────────────
+
+[[feeds]]
+url           = "https://feeds.example.com/tech-show.rss"
+slug          = "tech-show"
+poll_interval = "1h"
+
+# Download episodes whose title starts with a series number.
+[[feeds.rules]]
+name     = "numbered-episodes"
+priority = 0
+action   = "download"
+[feeds.rules.match]
+kind    = "title_regex"
+pattern = "^\\d+[:\\.]"   # matches "42: Deep Dive" or "42. Deep Dive"
+
+# Explicitly quarantine anything with "bonus" in the title (per-feed override
+# before the global skip-trailers rule fires).
+[[feeds.rules]]
+name     = "quarantine-bonus"
+priority = 5
+action   = "quarantine"
+[feeds.rules.match]
+kind    = "title_regex"
+pattern = "(?i)bonus|trailer|promo"
+
+
+# ── Feed: disabled ───────────────────────────────────────────────────────────
+
+[[feeds]]
+url     = "https://feeds.example.com/old-show.rss"
+slug    = "old-show"
+enabled = false   # excluded from `feed sync` and `run` until re-enabled
+# no per-feed rules — global rules still apply when re-enabled

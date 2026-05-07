@@ -416,6 +416,7 @@ name = "duralumin-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "duralumin-core",
  "duralumin-downloader",
@@ -424,6 +425,7 @@ dependencies = [
  "duralumin-rules",
  "duralumin-storage",
  "humantime",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror",

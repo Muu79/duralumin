@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>Test Podcast</title>
+    <link>https://example.com</link>
+    <description>A test podcast for integration tests.</description>
+    <image>
+      <url>https://example.com/cover.jpg</url>
+      <title>Test Podcast</title>
+      <link>https://example.com</link>
+    </image>
+
+    <item>
+      <title>Episode 1: The Beginning</title>
+      <guid isPermaLink="false">ep-001</guid>
+      <pubDate>Fri, 01 Mar 2024 12:00:00 +0000</pubDate>
+      <description>The first episode.</description>
+      <itunes:duration>3600</itunes:duration>
+      <enclosure url="https://example.com/ep1.mp3" length="50000000" type="audio/mpeg"/>
+    </item>
+
+    <item>
+      <title>Episode 2: The Middle</title>
+      <guid isPermaLink="false">ep-002</guid>
+      <pubDate>Fri, 08 Mar 2024 12:00:00 +0000</pubDate>
+      <description>The second episode.</description>
+      <itunes:duration>1800</itunes:duration>
+      <enclosure url="https://example.com/ep2.mp3" length="25000000" type="audio/mpeg"/>
+    </item>
+
+    <item>
+      <title>Episode 3: The End</title>
+      <guid isPermaLink="false">ep-003</guid>
+      <pubDate>Fri, 15 Mar 2024 12:00:00 +0000</pubDate>
+      <description>The third episode.</description>
+      <itunes:duration>7200</itunes:duration>
+      <enclosure url="https://example.com/ep3.mp3" length="100000000" type="audio/mpeg"/>
+    </item>
+  </channel>
+</rss>

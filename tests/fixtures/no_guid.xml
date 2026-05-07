@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>No GUID Feed</title>
+    <link>https://example.com</link>
+    <description>Feed with entries missing guid — falls back to enclosure URL.</description>
+
+    <item>
+      <title>Episode Without GUID</title>
+      <pubDate>Mon, 01 Jan 2024 00:00:00 +0000</pubDate>
+      <description>This entry has no guid element.</description>
+      <enclosure url="https://example.com/no-guid.mp3" length="10000000" type="audio/mpeg"/>
+    </item>
+  </channel>
+</rss>

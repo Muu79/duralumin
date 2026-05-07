@@ -1,0 +1,41 @@
+# duralumin config — edit this file then run duralumin again
+# Full reference: see examples/config.toml in the source tree
+
+[storage]
+# Directory where downloaded audio files are saved
+library_path = "/podcasts"
+
+# SQLite database file — keep it on the same filesystem as library_path
+state_db = "/podcasts/.duralumin.db"
+
+[downloader]
+concurrent_downloads = 2
+attempt_timeout      = "20m"
+max_retries          = 3
+backoff_base         = "30s"
+
+[defaults]
+# "skip"     — nothing downloads unless a rule explicitly says download (recommended)
+# "download" — everything downloads unless a rule explicitly says skip
+action_on_no_match = "skip"
+
+[logging]
+format = "pretty"   # "pretty" or "json"
+level  = "info"     # error / warn / info / debug / trace
+
+# ── Add your feeds below ──────────────────────────────────────────────────────
+# Minimal example — replace the URL and slug, then uncomment.
+#
+# [[feeds]]
+# url  = "https://feeds.example.com/your-podcast.rss"
+# slug = "your-podcast"           # unique identifier, used in filenames and logs
+#
+# # Download every episode from this feed
+# [[feeds.rules]]
+# name   = "download-all"
+# action = "download"
+# [feeds.rules.match]
+# kind = "always"
+#
+# # Or: set a per-feed default instead of writing an always rule
+# # default_action = "download"

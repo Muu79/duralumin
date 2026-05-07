@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+const DEFAULT_CONFIG: &str = include_str!("default_config.toml");
+
 use serde::{de, Deserialize, Deserializer};
 
 use duralumin_core::Action;
@@ -37,6 +39,9 @@ pub enum ConfigError {
     Toml(#[from] toml::de::Error),
     #[error("validation failed:\n  {}", .0.join("\n  "))]
     Validation(Vec<String>),
+    /// A default config was just written; caller should print the path and exit 0.
+    #[error("generated default config at {0}")]
+    Generated(PathBuf),
 }
 
 // ---- Config structs --------------------------------------------------------
@@ -118,7 +123,16 @@ impl Default for LoggingConfig {
 // ---- Load + validate -------------------------------------------------------
 
 pub fn load(override_path: Option<&Path>) -> Result<Config, ConfigError> {
-    let path = resolve_path(override_path)?;
+    let path = match resolve_path(override_path) {
+        Ok(p) => p,
+        Err(ConfigError::NotFound) => {
+            let dest = bootstrap_path();
+            write_default_config(&dest)?;
+            // Return a special variant so main can print the right message and exit.
+            return Err(ConfigError::Generated(dest));
+        }
+        Err(e) => return Err(e),
+    };
     let text = std::fs::read_to_string(&path)
         .map_err(|e| ConfigError::Io(path.clone(), e))?;
     let cfg: Config = toml::from_str(&text)?;
@@ -150,6 +164,39 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
     }
 
     if errors.is_empty() { Ok(()) } else { Err(ConfigError::Validation(errors)) }
+}
+
+/// Determine where to write a new default config on first run.
+///
+/// Priority (first writable wins):
+///   Linux/macOS : $XDG_CONFIG_HOME/duralumin/config.toml
+///              or $HOME/.config/duralumin/config.toml
+///   Windows     : %APPDATA%\duralumin\config.toml
+///   Fallback    : ./duralumin.toml  (current working directory)
+fn bootstrap_path() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    let base: Option<PathBuf> = std::env::var("APPDATA").ok().map(PathBuf::from);
+
+    #[cfg(not(target_os = "windows"))]
+    let base: Option<PathBuf> = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config")));
+
+    if let Some(dir) = base {
+        return dir.join("duralumin").join("config.toml");
+    }
+
+    PathBuf::from("duralumin.toml")
+}
+
+fn write_default_config(dest: &Path) -> Result<(), ConfigError> {
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| ConfigError::Io(parent.to_path_buf(), e))?;
+    }
+    std::fs::write(dest, DEFAULT_CONFIG)
+        .map_err(|e| ConfigError::Io(dest.to_path_buf(), e))
 }
 
 /// Resolve config file path in the order specified by spec §7.
@@ -188,6 +235,12 @@ fn resolve_path(override_path: Option<&Path>) -> Result<PathBuf, ConfigError> {
         if etc.exists() {
             return Ok(etc);
         }
+    }
+
+    // Local fallback — current working directory (also where bootstrap writes on failure)
+    let local = PathBuf::from("duralumin.toml");
+    if local.exists() {
+        return Ok(local);
     }
 
     Err(ConfigError::NotFound)

@@ -42,6 +42,10 @@ pub struct FeedConfig {
     pub enabled: bool,
     #[serde(default)]
     pub rules: Vec<RuleConfig>,
+    /// When set, acts as a catch-all at the end of this feed's rule list,
+    /// preventing global rules from firing.  Equivalent to appending an
+    /// `always` rule with the given action at priority `i32::MAX`.
+    pub default_action: Option<Action>,
 }
 
 impl FeedConfig {
@@ -56,6 +60,7 @@ impl FeedConfig {
             etag: None,
             last_modified: None,
             enabled: self.enabled,
+            image_url: None,
         }
     }
 }

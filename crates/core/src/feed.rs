@@ -15,4 +15,5 @@ pub struct Feed {
     pub etag: Option<String>,
     pub last_modified: Option<String>,
     pub enabled: bool,
+    pub image_url: Option<Url>,
 }

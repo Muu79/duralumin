@@ -276,6 +276,7 @@ mod tests {
             etag: None,
             last_modified: None,
             enabled: true,
+            image_url: None,
         }
     }
 

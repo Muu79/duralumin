@@ -67,8 +67,27 @@ impl Db {
         Ok(Self { pool })
     }
 
+    /// Open an in-memory database (for tests).
+    ///
+    /// Uses a single-connection pool so all operations share the same database
+    /// instance (multiple `:memory:` connections each get their own blank DB).
+    pub async fn open_in_memory() -> Result<Self> {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        let opts = SqliteConnectOptions::new().in_memory(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await?;
+        sqlx::migrate!().run(&pool).await?;
+        Ok(Self { pool })
+    }
+
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    pub fn from_pool(pool: SqlitePool) -> Self {
+        Self { pool }
     }
 
     // ---- Feed operations -------------------------------------------------------
@@ -77,15 +96,16 @@ impl Db {
         // ON CONFLICT(url) DO UPDATE preserves created_at; RETURNING id works
         // for both the insert path and the update path (SQLite ≥ 3.35).
         let row = sqlx::query(
-            "INSERT INTO feeds (url, slug, title, enabled, last_fetched_at, etag, last_modified)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO feeds (url, slug, title, enabled, last_fetched_at, etag, last_modified, image_url)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(url) DO UPDATE SET
                slug            = excluded.slug,
                title           = excluded.title,
                enabled         = excluded.enabled,
                last_fetched_at = excluded.last_fetched_at,
                etag            = excluded.etag,
-               last_modified   = excluded.last_modified
+               last_modified   = excluded.last_modified,
+               image_url       = excluded.image_url
              RETURNING id",
         )
         .bind(feed.url.as_str())
@@ -95,6 +115,7 @@ impl Db {
         .bind(feed.last_fetched_at)
         .bind(&feed.etag)
         .bind(&feed.last_modified)
+        .bind(feed.image_url.as_ref().map(Url::as_str))
         .fetch_one(&self.pool)
         .await?;
         Ok(FeedId(row.try_get("id")?))
@@ -282,6 +303,7 @@ fn row_to_feed(row: &SqliteRow) -> Result<Feed> {
     let last_fetched_at: Option<DateTime<Utc>> = row.try_get("last_fetched_at")?;
     let etag: Option<String> = row.try_get("etag")?;
     let last_modified: Option<String> = row.try_get("last_modified")?;
+    let image_url_str: Option<String> = row.try_get("image_url")?;
     Ok(Feed {
         id: FeedId(id),
         url: Url::parse(&url)?,
@@ -291,6 +313,7 @@ fn row_to_feed(row: &SqliteRow) -> Result<Feed> {
         etag,
         last_modified,
         enabled: enabled != 0,
+        image_url: image_url_str.as_deref().and_then(|s| Url::parse(s).ok()),
     })
 }
 

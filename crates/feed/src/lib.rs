@@ -10,6 +10,7 @@ pub struct FeedMeta {
     pub title: Option<String>,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
+    pub image_url: Option<Url>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -61,6 +62,7 @@ impl FeedFetcher {
                     title: None,
                     etag: feed.etag.clone(),
                     last_modified: feed.last_modified.clone(),
+                    image_url: feed.image_url.clone(),
                 },
                 vec![],
             ));
@@ -87,10 +89,19 @@ impl FeedFetcher {
             .build()
             .parse(Cursor::new(bytes.as_ref()))?;
 
+        let image_url = parsed
+            .logo
+            .as_ref()
+            .and_then(|img| Url::parse(&img.uri).ok())
+            .or_else(|| {
+                parsed.icon.as_ref().and_then(|img| Url::parse(&img.uri).ok())
+            });
+
         let meta = FeedMeta {
             title: parsed.title.map(|t| t.content),
             etag,
             last_modified,
+            image_url,
         };
 
         let episodes = parsed
@@ -101,6 +112,25 @@ impl FeedFetcher {
 
         Ok((meta, episodes))
     }
+}
+
+// ---- Public helper for testing ---------------------------------------------
+
+/// Parse raw RSS/Atom bytes as if they came from `feed`.
+/// Skips malformed entries (no enclosure, no date) with a tracing warn.
+pub fn parse_bytes(bytes: &[u8], feed: &Feed) -> Result<Vec<Episode>> {
+    let parsed = feed_rs::parser::Builder::new()
+        .base_uri(Some(feed.url.as_str()))
+        .build()
+        .parse(std::io::Cursor::new(bytes))?;
+
+    let episodes = parsed
+        .entries
+        .iter()
+        .filter_map(|entry| entry_to_episode(entry, feed))
+        .collect();
+
+    Ok(episodes)
 }
 
 // ---- Entry → Episode mapping -----------------------------------------------

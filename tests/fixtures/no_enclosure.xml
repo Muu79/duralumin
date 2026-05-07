@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>No Enclosure Feed</title>
+    <link>https://example.com</link>
+    <description>Feed with one good entry and one entry missing enclosure.</description>
+
+    <item>
+      <title>Good Episode</title>
+      <guid isPermaLink="false">good-ep</guid>
+      <pubDate>Mon, 01 Jan 2024 00:00:00 +0000</pubDate>
+      <enclosure url="https://example.com/good.mp3" length="5000000" type="audio/mpeg"/>
+    </item>
+
+    <item>
+      <title>Blog Post Without Audio</title>
+      <guid isPermaLink="false">blog-post</guid>
+      <pubDate>Tue, 02 Jan 2024 00:00:00 +0000</pubDate>
+      <description>This entry has no audio enclosure and should be skipped.</description>
+      <link>https://example.com/blog/post</link>
+    </item>
+  </channel>
+</rss>
