@@ -87,6 +87,7 @@ impl std::fmt::Display for EpisodeState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Action {
     Download,
     Skip,

@@ -10,4 +10,6 @@ regex          = { workspace = true }
 bytesize       = { workspace = true }
 humantime      = { workspace = true }
 chrono         = { workspace = true }
+url            = { workspace = true }
 thiserror      = { workspace = true }
+tracing        = { workspace = true }

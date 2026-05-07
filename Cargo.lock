@@ -423,8 +423,10 @@ dependencies = [
  "duralumin-metadata",
  "duralumin-rules",
  "duralumin-storage",
+ "humantime",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
  "toml",
  "tracing",
@@ -496,6 +498,8 @@ dependencies = [
  "regex",
  "serde",
  "thiserror",
+ "tracing",
+ "url",
 ]
 
 [[package]]
