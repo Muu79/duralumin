@@ -2,7 +2,7 @@
 # Default path: ~/.config/duralumin/config.toml
 # Override:     --config <path>  or  $DURALUMIN_CONFIG
 
-# ── Storage ──────────────────────────────────────────────────────────────────
+# --- Storage ------------------------------------------------------------------
 
 [storage]
 # Base directory — all paths default relative to this.
@@ -13,7 +13,7 @@ dir = "/podcasts"
 # state_db     = "/podcasts/db/duralumin.db"  # defaults to {dir}/db/duralumin.db
 
 
-# ── Downloader ───────────────────────────────────────────────────────────────
+# --- Downloader ---------------------------------------------------------------
 
 [downloader]
 # Maximum simultaneous downloads. 2 is safe for home broadband.
@@ -32,10 +32,10 @@ backoff_base = "30s"
 
 # Sent as the HTTP User-Agent header. Be identifiable — feeds may block
 # generic agents.
-user_agent = "duralumin/0.1.0 (+https://github.com/yourname/duralumin)"
+user_agent = "duralumin/0.1 (+https://github.com/yourname/duralumin)"
 
 
-# ── Defaults ─────────────────────────────────────────────────────────────────
+# --- Defaults -----------------------------------------------------------------
 
 [defaults]
 # What happens when no rule matches an episode.
@@ -44,7 +44,7 @@ user_agent = "duralumin/0.1.0 (+https://github.com/yourname/duralumin)"
 action_on_no_match = "skip"
 
 
-# ── Logging ──────────────────────────────────────────────────────────────────
+# --- Logging ------------------------------------------------------------------
 
 [logging]
 # "pretty" — human-readable colored output (good for interactive use / systemd journal)
@@ -54,16 +54,37 @@ format = "pretty"
 # Standard log levels: error, warn, info, debug, trace
 level = "info"
 
+# --- Rules --------------------------------------------------------------------
 
-# ── Global rules ─────────────────────────────────────────────────────────────
+# --- Global rules -------------------------------------------------------------
 # Applied after per-feed rules. Useful for cross-feed policies.
 
 # Example: skip anything shorter than 5 minutes (likely a trailer or ad)
 [[global_rules]]
+# A name is required for logging and debugging, but can be anything you like.
 name     = "skip-trailers"
+# Priority values are used to resolve conflicts between rules with the same scope, with higher values taking precedence.
+# The scope heirachy goes like this, with values higher in the list taking precedence over lower ones:
+# 1. Per-feed rules (defined within a [[feeds]] block)
+# 2. Global rules (defined in the [[global_rules]] section)
+# 3. Defaults (defined in the [defaults] section, there can also only be one of these)
 priority = 0
+# There are several built in-actions: "download", "skip", "quarantine", and "archive".
 action   = "skip"
 [global_rules.match]
+# There are several built in match kinds:
+# Regex on the title or description (uses pattern field, not value)
+#   - title_regex
+#   - description_regex
+# Duration or size min/max
+#   - duration_min
+#   - duration_max
+#   - episode_size_min
+#   - episode_size_max
+# Published date before/after
+#   - published_before
+#   - published_after
+# We can also use "always" to match everything.
 kind  = "duration_max"
 value = "5m"
 
@@ -77,13 +98,13 @@ kind  = "episode_size_max"
 value = "500 MB"
 
 
-# ── Feeds ────────────────────────────────────────────────────────────────────
+# --- Feeds --------------------------------------------------------------------
 # Each [[feeds]] block is one RSS/Atom feed.
 # slug      — filesystem-safe identifier; used in log output. Must be unique.
 # poll_interval — how often `run` (without --once) re-checks this feed.
 #               Not used when running via cron/systemd timer (use --once there).
 
-# ── Feed: download everything ─────────────────────────────────────────────────
+# --- Feed: download everything -------------------------------------------------
 
 [[feeds]]
 url           = "https://feeds.example.com/my-favourite-podcast.rss"
@@ -98,7 +119,7 @@ action = "download"
 kind = "always"
 
 
-# ── Feed: only recent episodes ────────────────────────────────────────────────
+# --- Feed: only recent episodes ------------------------------------------------
 
 [[feeds]]
 url           = "https://feeds.example.com/news-briefing.rss"
@@ -116,7 +137,7 @@ kind = "published_after"
 date = "2024-01-01T00:00:00Z"
 
 
-# ── Feed: filter by title ─────────────────────────────────────────────────────
+# --- Feed: filter by title -----------------------------------------------------
 
 [[feeds]]
 url           = "https://feeds.example.com/tech-show.rss"
@@ -143,7 +164,7 @@ kind    = "title_regex"
 pattern = "(?i)bonus|trailer|promo"
 
 
-# ── Feed: disabled ───────────────────────────────────────────────────────────
+# --- Feed: disabled -----------------------------------------------------------
 
 [[feeds]]
 url     = "https://feeds.example.com/old-show.rss"

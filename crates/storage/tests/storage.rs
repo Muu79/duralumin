@@ -166,9 +166,9 @@ async fn download_queue_returns_matched_episodes() {
     let db = open_mem_db().await;
     let feed_id = db.upsert_feed(&make_feed("https://example.com/rss", "queue")).await.unwrap();
 
-    let mut ep1 = make_episode(feed_id, "q1");
-    let mut ep2 = make_episode(feed_id, "q2");
-    let mut ep3 = make_episode(feed_id, "q3");
+    let ep1 = make_episode(feed_id, "q1");
+    let ep2 = make_episode(feed_id, "q2");
+    let ep3 = make_episode(feed_id, "q3");
 
     db.upsert_episode(&ep1).await.unwrap();
     db.upsert_episode(&ep2).await.unwrap();
