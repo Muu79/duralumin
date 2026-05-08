@@ -76,17 +76,67 @@ impl Downloader {
             .build()
             .expect("failed to build HTTP client");
         if config.accept_invalid_certs {
-            tracing::warn!("TLS certificate validation disabled — only use this for trusted local servers");
+            tracing::warn!(
+                "TLS certificate validation disabled — only use this for trusted local servers"
+            );
         }
         Self { client, config }
     }
 
+    pub async fn retry_download(
+        &self,
+        episode: &Episode,
+        on_state: impl Fn(EpisodeState) + Send + Sync,
+        attempt: u8,
+        max: u8,
+        e: DownloadError,
+        last_err: &mut Option<DownloadError>,
+    ) -> Option<DownloadError> {
+        if attempt < max {
+            tracing::warn!(
+                episode_id = %episode.id,
+                attempt,
+                max,
+                error = %e,
+                "download attempt failed, will retry"
+            );
+            on_state(EpisodeState::Failed {
+                last_error: e.to_string(),
+                attempts: attempt,
+            });
+            let delay = backoff(self.config.backoff_base, attempt);
+            tracing::debug!(
+                episode_id = %episode.id,
+                delay_secs = delay.as_secs_f64(),
+                "backing off before next attempt"
+            );
+            tokio::time::sleep(delay).await;
+            *last_err = Some(e);
+            None
+        } else {
+            tracing::error!(
+                episode_id = %episode.id,
+                title = %episode.title,
+                total_attempts = attempt,
+                reason = e.reason(),
+                error = %e,
+                "download failed after all retries, quarantining"
+            );
+            let reason = e.reason().to_string();
+            let detail = e.to_string();
+            on_state(EpisodeState::Quarantined {
+                reason,
+                last_error: detail,
+            });
+            return Some(e);
+        }
+    }
     /// Download one episode, calling `on_state` for each state transition.
     pub async fn download(
         &self,
         episode: &Episode,
         dest_dir: &Path,
-        on_state: impl Fn(EpisodeState) + Send,
+        on_state: impl Fn(EpisodeState) + Send + Sync,
     ) -> Result<DownloadResult, DownloadError> {
         let max = self.config.max_retries;
         let mut last_err: Option<DownloadError> = None;
@@ -100,7 +150,10 @@ impl Downloader {
                 max,
                 "starting download attempt"
             );
-            on_state(EpisodeState::Downloading { attempt, started_at: Utc::now() });
+            on_state(EpisodeState::Downloading {
+                attempt,
+                started_at: Utc::now(),
+            });
 
             let result = tokio::time::timeout(
                 self.config.attempt_timeout,
@@ -111,81 +164,34 @@ impl Downloader {
             match result {
                 Ok(Ok(r)) => return Ok(r),
                 Ok(Err(e)) => {
-                    if attempt < max {
-                        tracing::warn!(
-                            episode_id = %episode.id,
+                    if let Some(err) = self
+                        .retry_download(
+                            episode,
+                            &on_state,
                             attempt,
                             max,
-                            error = %e,
-                            "download attempt failed, will retry"
-                        );
-                        on_state(EpisodeState::Failed {
-                            last_error: e.to_string(),
-                            attempts: attempt,
-                        });
-                        let delay = backoff(self.config.backoff_base, attempt);
-                        tracing::debug!(
-                            episode_id = %episode.id,
-                            delay_secs = delay.as_secs_f64(),
-                            "backing off before next attempt"
-                        );
-                        tokio::time::sleep(delay).await;
-                        last_err = Some(e);
-                    } else {
-                        tracing::error!(
-                            episode_id = %episode.id,
-                            title = %episode.title,
-                            total_attempts = attempt,
-                            reason = e.reason(),
-                            error = %e,
-                            "download failed after all retries, quarantining"
-                        );
-                        let reason = e.reason().to_string();
-                        let detail = e.to_string();
-                        on_state(EpisodeState::Quarantined {
-                            reason,
-                            last_error: detail,
-                        });
-                        return Err(e);
+                            e,
+                            &mut last_err,
+                        )
+                        .await
+                    {
+                        return Err(err);
                     }
                 }
                 Err(_elapsed) => {
-                    let e = DownloadError::Timeout(self.config.attempt_timeout);
-                    if attempt < max {
-                        tracing::warn!(
-                            episode_id = %episode.id,
+                    let timeout_err = DownloadError::Timeout(self.config.attempt_timeout);
+                    if let Some(err) = self
+                        .retry_download(
+                            episode,
+                            &on_state,
                             attempt,
                             max,
-                            timeout_secs = self.config.attempt_timeout.as_secs(),
-                            "download timed out, will retry"
-                        );
-                        on_state(EpisodeState::Failed {
-                            last_error: e.to_string(),
-                            attempts: attempt,
-                        });
-                        let delay = backoff(self.config.backoff_base, attempt);
-                        tracing::debug!(
-                            episode_id = %episode.id,
-                            delay_secs = delay.as_secs_f64(),
-                            "backing off before next attempt"
-                        );
-                        tokio::time::sleep(delay).await;
-                        last_err = Some(e);
-                    } else {
-                        tracing::error!(
-                            episode_id = %episode.id,
-                            title = %episode.title,
-                            total_attempts = attempt,
-                            timeout_secs = self.config.attempt_timeout.as_secs(),
-                            "download timed out after all retries, quarantining"
-                        );
-                        let reason = e.reason().to_string();
-                        let detail = e.to_string();
-                        on_state(EpisodeState::Quarantined {
-                            reason,
-                            last_error: detail,
-                        });
-                        return Err(e);
+                            timeout_err,
+                            &mut last_err,
+                        )
+                        .await
+                    {
+                        return Err(err);
                     }
                 }
             }
@@ -194,7 +200,7 @@ impl Downloader {
         // last_err is always Some here (max > 0), but the loop returned if max==0
         Err(last_err.unwrap_or(DownloadError::Io(std::io::Error::new(
             std::io::ErrorKind::Other,
-            "no attempts made",
+            "no attempts made.\nTry setting config:\n[downloader]\nmax_retries ≥ 1",
         ))))
     }
 
@@ -215,7 +221,11 @@ impl Downloader {
 
         // First probe: HEAD to check Accept-Ranges (only if we have a partial file)
         let resume_from = if existing_bytes > 0 {
-            let head = self.client.head(episode.enclosure_url.as_str()).send().await?;
+            let head = self
+                .client
+                .head(episode.enclosure_url.as_str())
+                .send()
+                .await?;
             let accepts_ranges = head
                 .headers()
                 .get("Accept-Ranges")
@@ -237,18 +247,14 @@ impl Downloader {
         let resp = rb.send().await?;
 
         // If we sent a Range request but got 200 (not 206), server ignored it — start fresh
-        let (resume_from, mut file) = if resume_from > 0
-            && resp.status() == StatusCode::OK
-        {
+        let (resume_from, mut file) = if resume_from > 0 && resp.status() == StatusCode::OK {
             tracing::debug!(
                 episode_id = %episode.id,
                 "server returned 200 to Range request, restarting"
             );
             tokio::fs::remove_file(&part_path).await.ok();
             (0u64, File::create(&part_path).await?)
-        } else if !resp.status().is_success()
-            && resp.status() != StatusCode::PARTIAL_CONTENT
-        {
+        } else if !resp.status().is_success() && resp.status() != StatusCode::PARTIAL_CONTENT {
             return Err(DownloadError::Http(resp.status()));
         } else if resume_from > 0 {
             // Append to existing .part
@@ -308,7 +314,11 @@ impl Downloader {
             "download complete"
         );
 
-        Ok(DownloadResult { path: final_path, sha256, bytes: bytes_written })
+        Ok(DownloadResult {
+            path: final_path,
+            sha256,
+            bytes: bytes_written,
+        })
     }
 }
 
@@ -338,7 +348,9 @@ fn part_path_for(final_path: &Path) -> PathBuf {
 
 /// Exponential backoff with ±25% jitter.
 fn backoff(base: Duration, attempt: u8) -> Duration {
-    let factor = 1u64.checked_shl(attempt.saturating_sub(1) as u32).unwrap_or(u64::MAX);
+    let factor = 1u64
+        .checked_shl(attempt.saturating_sub(1) as u32)
+        .unwrap_or(u64::MAX);
     let millis = base.as_millis() as u64 * factor;
     // ±25% jitter using a simple hash of the attempt number as pseudo-random
     let jitter_range = millis / 4;
