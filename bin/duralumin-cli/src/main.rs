@@ -6,6 +6,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use comfy_table::{Cell, Color, ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
+use owo_colors::OwoColorize;
 use tokio::sync::Semaphore;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -408,17 +410,20 @@ async fn sync_one_feed(
 async fn cmd_feed_list(db: &Db) -> Result<()> {
     let feeds = db.list_feeds().await?;
     if feeds.is_empty() {
-        println!("No feeds in database.");
+        println!("{}", "No feeds in database.".dimmed());
         return Ok(());
     }
-    println!("{:<30} {:<50} {}", "SLUG", "URL", "LAST FETCHED");
+    let mut table = make_table();
+    table.set_header(["SLUG", "TITLE", "LAST FETCHED"]);
     for f in feeds {
         let last = f
             .last_fetched_at
             .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_else(|| "never".into());
-        println!("{:<30} {:<50} {}", f.slug, f.url, last);
+        let title = f.title.as_deref().unwrap_or("—");
+        table.add_row([f.slug.as_str(), title, &last]);
     }
+    println!("{table}");
     Ok(())
 }
 
@@ -447,10 +452,17 @@ async fn cmd_episode_list(
     };
     let episodes = db.list_episodes(filter).await?;
 
-    println!("{:<12} {:<40} {}", "ID", "TITLE", "STATE");
+    let mut table = make_table();
+    table.set_header(["ID", "TITLE", "STATE"]);
     for ep in episodes {
-        println!("{:<12} {:<40} {}", ep.id.short(), ep.title, ep.state);
+        let kind = ep.state.kind_name().to_lowercase();
+        table.add_row([
+            Cell::new(ep.id.short()),
+            Cell::new(&ep.title),
+            state_cell(&kind),
+        ]);
     }
+    println!("{table}");
     Ok(())
 }
 
@@ -465,7 +477,7 @@ async fn cmd_requeue(db: &Db, id: &str) -> Result<()> {
         .with_context(|| format!("episode {id:?} not found"))?;
     db.update_episode_state(&ep.id, &EpisodeState::Matched(Action::Download))
         .await?;
-    println!("Re-queued episode {}", ep.id.short());
+    println!("{} episode {}", "Re-queued".green(), ep.id.short());
     Ok(())
 }
 
@@ -606,7 +618,7 @@ async fn cmd_download(cfg: &config::Config, db: &Db, ids: Vec<String>) -> Result
     };
 
     if episodes.is_empty() {
-        println!("Nothing to download.");
+        println!("{}", "Nothing to download.".dimmed());
         return Ok(());
     }
 
@@ -727,18 +739,24 @@ async fn cmd_quarantine_list(db: &Db) -> Result<()> {
     };
     let episodes = db.list_episodes(filter).await?;
     if episodes.is_empty() {
-        println!("No quarantined episodes.");
+        println!("{}", "No quarantined episodes.".dimmed());
         return Ok(());
     }
-    println!("{:<12} {:<40} {}", "ID", "TITLE", "REASON");
+    let mut table = make_table();
+    table.set_header(["ID", "TITLE", "REASON"]);
     for ep in episodes {
         let reason = if let EpisodeState::Quarantined { reason, .. } = &ep.state {
-            reason.as_str()
+            reason.clone()
         } else {
-            "?"
+            "?".into()
         };
-        println!("{:<12} {:<40} {}", ep.id.short(), ep.title, reason);
+        table.add_row([
+            Cell::new(ep.id.short()),
+            Cell::new(&ep.title),
+            Cell::new(&reason).fg(Color::Red),
+        ]);
     }
+    println!("{table}");
     Ok(())
 }
 
@@ -758,11 +776,19 @@ async fn cmd_rules_check(cfg: &config::Config, db: &Db, slug: &str) -> Result<()
     };
     let episodes = db.list_episodes(filter).await?;
 
-    println!("{:<12} {:<40} {}", "ID", "TITLE", "ACTION");
+    let mut table = make_table();
+    table.set_header(["ID", "TITLE", "ACTION"]);
     for ep in &episodes {
         let action = engine.evaluate(ep, &feed);
-        println!("{:<12} {:<40} {}", ep.id.short(), ep.title, action);
+        let action_str = action.to_string();
+        let action_cell = match action_str.as_str() {
+            "download" => Cell::new(&action_str).fg(Color::Green),
+            "skip"     => Cell::new(&action_str).fg(Color::DarkGrey),
+            _          => Cell::new(&action_str),
+        };
+        table.add_row([Cell::new(ep.id.short()), Cell::new(&ep.title), action_cell]);
     }
+    println!("{table}");
     Ok(())
 }
 
@@ -771,15 +797,12 @@ async fn cmd_rules_check(cfg: &config::Config, db: &Db, slug: &str) -> Result<()
 async fn cmd_status(db: &Db) -> Result<()> {
     let feeds = db.list_feeds().await?;
     if feeds.is_empty() {
-        println!("No feeds in database. Run `dura feed sync` first.");
+        println!("{}", "No feeds in database. Run `dura feed sync` first.".dimmed());
         return Ok(());
     }
 
-    println!(
-        "{:<28} {:>5} {:>5} {:>6} {:>5} {:>5}",
-        "FEED", "TOTAL", "DL", "QUEUED", "SKIP", "QUAR"
-    );
-    println!("{}", "-".repeat(58));
+    let mut table = make_table();
+    table.set_header(["FEED", "TOTAL", "DL", "QUEUED", "SKIP", "QUAR"]);
 
     for feed in &feeds {
         let eps = db
@@ -804,17 +827,26 @@ async fn cmd_status(db: &Db) -> Result<()> {
         }
 
         let name = feed.title.as_deref().unwrap_or(&feed.slug);
-        let truncated = if name.len() > 27 { &name[..27] } else { name };
-        println!(
-            "{:<28} {:>5} {:>5} {:>6} {:>5} {:>5}",
-            truncated,
-            eps.len(),
-            dl,
-            queued,
-            skipped,
-            quarantined,
-        );
+        let quar_cell = if quarantined > 0 {
+            Cell::new(quarantined).fg(Color::Red)
+        } else {
+            Cell::new(quarantined)
+        };
+        let queued_cell = if queued > 0 {
+            Cell::new(queued).fg(Color::Yellow)
+        } else {
+            Cell::new(queued)
+        };
+        table.add_row([
+            Cell::new(name),
+            Cell::new(eps.len()),
+            Cell::new(dl).fg(Color::Green),
+            queued_cell,
+            Cell::new(skipped).fg(Color::DarkGrey),
+            quar_cell,
+        ]);
     }
+    println!("{table}");
     Ok(())
 }
 
@@ -853,28 +885,45 @@ async fn cmd_feed_info(db: &Db, slug: &str) -> Result<()> {
         .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
         .unwrap_or_else(|| "never".into());
 
-    println!("Feed:         {}", feed.title.as_deref().unwrap_or(&feed.slug));
-    println!("Slug:         {}", feed.slug);
-    println!("URL:          {}", feed.url);
-    println!("Last fetched: {last}");
+    println!("{}", feed.title.as_deref().unwrap_or(&feed.slug).bold());
+    println!("  {} {}", "Slug:".dimmed(), feed.slug);
+    println!("  {} {}", "URL:".dimmed(), feed.url);
+    println!("  {} {}", "Last fetched:".dimmed(), last);
     println!();
-    println!(
-        "Episodes: {} total | {} downloaded | {} queued | {} skipped | {} quarantined{}",
-        all_eps.len(), dl, queued, skipped, quarantined,
-        if missing > 0 { format!(" | {missing} MISSING") } else { String::new() }
-    );
+
+    // Summary counts
+    let mut summary = make_table();
+    summary.set_header(["TOTAL", "DL", "QUEUED", "SKIP", "QUAR", "MISSING"]);
+    let miss_cell = if missing > 0 { Cell::new(missing).fg(Color::Red) } else { Cell::new(missing) };
+    let quar_cell = if quarantined > 0 { Cell::new(quarantined).fg(Color::Red) } else { Cell::new(quarantined) };
+    let queued_cell = if queued > 0 { Cell::new(queued).fg(Color::Yellow) } else { Cell::new(queued) };
+    summary.add_row([
+        Cell::new(all_eps.len()),
+        Cell::new(dl).fg(Color::Green),
+        queued_cell,
+        Cell::new(skipped).fg(Color::DarkGrey),
+        quar_cell,
+        miss_cell,
+    ]);
+    println!("{summary}");
 
     let recent: Vec<_> = all_eps.iter().take(20).collect();
     if !recent.is_empty() {
         println!();
-        println!("{:<10} {:<12} {:<16} {}", "ID", "DATE", "STATE", "TITLE");
-        println!("{}", "-".repeat(72));
+        println!("{}", "Recent episodes:".bold());
+        let mut table = make_table();
+        table.set_header(["ID", "DATE", "STATE", "TITLE"]);
         for ep in recent {
             let date = ep.pub_date.format("%Y-%m-%d").to_string();
-            let state = ep.state.kind_name();
-            let title = if ep.title.len() > 36 { &ep.title[..36] } else { &ep.title };
-            println!("{:<10} {:<12} {:<16} {}", ep.id.short(), date, state, title);
+            let kind = ep.state.kind_name().to_lowercase();
+            table.add_row([
+                Cell::new(ep.id.short()),
+                Cell::new(&date),
+                state_cell(&kind),
+                Cell::new(&ep.title),
+            ]);
         }
+        println!("{table}");
     }
     Ok(())
 }
@@ -905,40 +954,48 @@ fn cmd_rules_list(cfg: &config::Config) -> Result<()> {
         }
     }
 
-    fn print_rules(rules: &[duralumin_rules::config::RuleConfig]) {
+    fn rules_table(rules: &[duralumin_rules::config::RuleConfig]) -> Table {
+        let mut t = make_table();
+        t.set_header(["PRI", "NAME", "MATCH", "ACTION"]);
         for r in rules {
-            println!(
-                "  [pri {:>4}]  {:<28}  {:<40}  → {}",
-                r.priority,
-                r.name,
-                fmt_kind(&r.match_),
-                r.action,
-            );
+            let action_str = r.action.to_string();
+            let action_cell = match action_str.as_str() {
+                "download" => Cell::new(&action_str).fg(Color::Green),
+                "skip"     => Cell::new(&action_str).fg(Color::DarkGrey),
+                _          => Cell::new(&action_str),
+            };
+            t.add_row([
+                Cell::new(r.priority),
+                Cell::new(&r.name),
+                Cell::new(&fmt_kind(&r.match_)),
+                action_cell,
+            ]);
         }
+        t
     }
 
-    println!("Global rules ({}):", cfg.global_rules.len());
+    println!("{}", "Global rules:".bold());
     if cfg.global_rules.is_empty() {
-        println!("  (none)");
+        println!("  {}", "(none)".dimmed());
     } else {
-        print_rules(&cfg.global_rules);
+        println!("{}", rules_table(&cfg.global_rules));
     }
 
     for feed in &cfg.feeds {
         println!();
-        println!("Feed: {} ({} rule(s)):", feed.slug, feed.rules.len());
+        println!("{} {}", "Feed:".bold(), feed.slug);
         if feed.rules.is_empty() {
-            println!("  (none — global rules apply)");
+            println!("  {}", "(none — global rules apply)".dimmed());
         } else {
-            print_rules(&feed.rules);
+            println!("{}", rules_table(&feed.rules));
         }
         if let Some(action) = feed.default_action {
-            println!("  [catch-all]  default action: {action}");
+            println!("  {} {}", "catch-all:".dimmed(), action);
         }
     }
 
     println!();
-    println!("Default action (no match): {}", cfg.defaults.action_on_no_match);
+    println!("{} {}", "Default (no match):".dimmed(), cfg.defaults.action_on_no_match);
     Ok(())
 }
 
@@ -966,27 +1023,56 @@ async fn cmd_check(db: &Db, fix: bool) -> Result<()> {
     }
 
     if missing.is_empty() {
-        println!("All files present.");
+        println!("{}", "All files present.".green());
         return Ok(());
     }
 
-    println!();
+    let mut table = make_table();
+    table.set_header(["ID", "TITLE", "PATH"]);
     for (ep, path) in &missing {
-        println!("  MISSING  {}  {}  {:?}", ep.id.short(), path.display(), ep.title);
+        table.add_row([
+            Cell::new(ep.id.short()).fg(Color::Red),
+            Cell::new(&ep.title),
+            Cell::new(path.display().to_string()).fg(Color::DarkGrey),
+        ]);
     }
-    println!();
-    println!("{} missing file(s).", missing.len());
+    println!("{table}");
+    println!("{} missing file(s).", missing.len().to_string().red());
 
     if fix {
         for (ep, _) in &missing {
             db.update_episode_state(&ep.id, &EpisodeState::Matched(Action::Download))
                 .await?;
         }
-        println!("Re-queued {} episode(s) — run `dura download` to fetch.", missing.len());
+        println!(
+            "{} {} episode(s) — run `dura download` to fetch.",
+            "Re-queued".green(),
+            missing.len()
+        );
     } else {
-        println!("Run with --fix to re-queue them for download.");
+        println!("{}", "Run with --fix to re-queue them for download.".dimmed());
     }
     Ok(())
+}
+
+// ---- Output helpers --------------------------------------------------------
+
+fn make_table() -> Table {
+    let mut t = Table::new();
+    t.load_preset(UTF8_FULL_CONDENSED)
+        .set_content_arrangement(ContentArrangement::Dynamic);
+    t
+}
+
+fn state_cell(label: &str) -> Cell {
+    match label {
+        "complete"    => Cell::new(label).fg(Color::Green),
+        "quarantined" => Cell::new(label).fg(Color::Red),
+        "failed"      => Cell::new(label).fg(Color::Red),
+        "matched"     => Cell::new(label).fg(Color::Yellow),
+        "downloading" => Cell::new(label).fg(Color::Cyan),
+        _             => Cell::new(label),
+    }
 }
 
 // ---- Helpers ---------------------------------------------------------------

@@ -29,3 +29,5 @@ reqwest            = { workspace = true }
 rustls             = { workspace = true }
 anyhow             = { workspace = true }
 url                = { workspace = true }
+comfy-table        = { workspace = true }
+owo-colors         = { workspace = true }
