@@ -2,6 +2,9 @@
 name = "duralumin-cli"
 version.workspace = true
 edition.workspace = true
+description = "Podcast download daemon — sync, archive, and restream your feeds"
+license = "MIT"
+repository = "https://github.com/muu79/duralumin"
 
 [[bin]]
 name = "dura"

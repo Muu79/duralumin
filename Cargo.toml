@@ -73,3 +73,8 @@ tower-http = { version = "0.6", features = ["fs"] }
 # CLI output
 comfy-table = "7"
 owo-colors  = "4"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
