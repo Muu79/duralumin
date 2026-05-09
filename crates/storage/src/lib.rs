@@ -213,6 +213,15 @@ impl Db {
         Ok(inserted)
     }
 
+    pub async fn delete_episode(&self, id: &EpisodeId) -> Result<bool> {
+        let rows = sqlx::query("DELETE FROM episodes WHERE id = ?")
+            .bind(id.as_str())
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        Ok(rows > 0)
+    }
+
     pub async fn get_episode(&self, id: &EpisodeId) -> Result<Option<Episode>> {
         let row = sqlx::query("SELECT * FROM episodes WHERE id = ?")
             .bind(id.as_str())

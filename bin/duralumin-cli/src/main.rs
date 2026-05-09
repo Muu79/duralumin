@@ -46,14 +46,17 @@ enum LogFormat {
 enum Command {
     Feed(FeedArgs),
     Episode(EpisodeArgs),
-    Run(RunArgs),
+    /// Start the daemon: sync feeds on schedule, download matched episodes,
+    /// and (if any feed has restream=true) serve the RSS restream server.
+    Start,
+    /// One-shot sync: refresh feeds and drain the download queue, then exit.
+    /// Safe to run alongside a live `dura start` daemon.
+    Sync(SyncArgs),
     Download(DownloadArgs),
     Quarantine(QuarantineArgs),
     Rules(RulesArgs),
     Config(ConfigArgs),
     Db(DbArgs),
-    /// Start the RSS restream HTTP server (requires [server] in config).
-    Serve,
     /// Show a summary of all feeds and their episode counts.
     Status,
     /// Check for Complete episodes whose local file has been deleted.
@@ -79,11 +82,6 @@ struct FeedArgs {
 
 #[derive(Subcommand)]
 enum FeedSub {
-    /// Fetch one or more feeds and evaluate rules on new episodes.
-    Sync {
-        /// Feed slugs to sync (all enabled feeds if omitted).
-        slugs: Vec<String>,
-    },
     /// List all configured feeds and their last-fetched status.
     List,
     /// Show detailed info and recent episodes for one feed.
@@ -111,15 +109,24 @@ enum EpisodeSub {
     },
     /// Re-queue an episode for download (sets state to Matched(Download)).
     Requeue { id: String },
+    /// Remove an episode from the database.
+    Delete {
+        id: String,
+        /// Also delete the downloaded file from disk.
+        #[arg(long)]
+        delete_file: bool,
+    },
 }
 
-// ---- run subcommand --------------------------------------------------------
+// ---- sync subcommand -------------------------------------------------------
 
 #[derive(Args)]
-struct RunArgs {
-    /// Run once then exit (instead of looping).
+struct SyncArgs {
+    /// Feed slugs to sync (all enabled feeds if omitted).
+    slugs: Vec<String>,
+    /// Only refresh feed metadata; do not drain the download queue.
     #[arg(long)]
-    once: bool,
+    feeds_only: bool,
 }
 
 // ---- download subcommand ---------------------------------------------------
@@ -241,7 +248,7 @@ async fn main() {
     // Daemon commands use the configured log level; interactive commands default
     // to warn so info-level chatter from DB opens, migrations, etc. stays quiet.
     // --log-level always overrides regardless of command.
-    let is_daemon = matches!(&cli.command, Command::Run(_) | Command::Serve);
+    let is_daemon = matches!(&cli.command, Command::Start);
     let default_level = if is_daemon { cfg.logging.level.as_str() } else { "warn" };
     let log_level = cli.log_level.as_deref().unwrap_or(default_level).to_string();
     let log_format = cli.log_format.as_ref();
@@ -289,17 +296,18 @@ async fn main() {
 async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
     match command {
         Command::Feed(FeedArgs { sub }) => match sub {
-            FeedSub::Sync { slugs } => cmd_feed_sync(cfg, db, slugs).await,
             FeedSub::List => cmd_feed_list(db).await,
             FeedSub::Info { slug } => cmd_feed_info(db, &slug).await,
         },
         Command::Episode(EpisodeArgs { sub }) => match sub {
-            EpisodeSub::List { feed, state, limit } => {
-                cmd_episode_list(db, feed.as_deref(), state.as_deref(), limit).await
+            EpisodeSub::List { feed, state, limit, completions } => {
+                cmd_episode_list(db, feed.as_deref(), state.as_deref(), limit, completions).await
             }
             EpisodeSub::Requeue { id } => cmd_requeue(db, &id).await,
+            EpisodeSub::Delete { id, delete_file } => cmd_episode_delete(db, &id, delete_file).await,
         },
-        Command::Run(RunArgs { once }) => cmd_run(cfg, db, once).await,
+        Command::Start => cmd_start(cfg, db).await,
+        Command::Sync(args) => cmd_sync(cfg, db, args).await,
         Command::Download(DownloadArgs { ids }) => cmd_download(cfg, db, ids).await,
         Command::Quarantine(QuarantineArgs { sub }) => match sub {
             QuarantineSub::List => cmd_quarantine_list(db).await,
@@ -318,29 +326,36 @@ async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
                 Ok(())
             }
         },
-        Command::Serve => cmd_serve(cfg, db).await,
         Command::Status => cmd_status(db).await,
         Command::Check(CheckArgs { fix }) => cmd_check(db, fix).await,
     }
 }
 
-// ---- feed sync -------------------------------------------------------------
+// ---- sync (one-shot pipeline) ----------------------------------------------
 
-async fn cmd_feed_sync(cfg: &config::Config, db: &Db, slugs: Vec<String>) -> Result<()> {
+async fn cmd_sync(cfg: &config::Config, db: &Db, args: SyncArgs) -> Result<()> {
     let engine = build_engine(cfg, db).await?;
     let fetcher = FeedFetcher::new(
         &cfg.downloader.user_agent,
         cfg.downloader.accept_invalid_certs,
     );
 
-    let feeds_to_sync: Vec<&FeedConfig> = if slugs.is_empty() {
+    let feeds_to_sync: Vec<&FeedConfig> = if args.slugs.is_empty() {
         cfg.feeds.iter().filter(|f| f.enabled).collect()
     } else {
-        cfg.feeds.iter().filter(|f| slugs.contains(&f.slug)).collect()
+        cfg.feeds.iter().filter(|f| args.slugs.contains(&f.slug)).collect()
     };
 
     for feed_cfg in feeds_to_sync {
         sync_one_feed(feed_cfg, db, &engine, &fetcher).await;
+    }
+
+    if args.recheck {
+        recheck_episodes(db, &engine, &args.slugs).await?;
+    }
+
+    if !args.feeds_only {
+        cmd_download(cfg, db, vec![]).await?;
     }
     Ok(())
 }
@@ -481,32 +496,39 @@ async fn cmd_requeue(db: &Db, id: &str) -> Result<()> {
     Ok(())
 }
 
-// ---- run -------------------------------------------------------------------
+// ---- start (daemon) --------------------------------------------------------
 
-async fn cmd_run(cfg: &config::Config, db: &Db, once: bool) -> Result<()> {
-    // Spawn the RSS server in the background if configured.
-    if let Some(srv_cfg) = &cfg.server {
-        let server_config = ServerConfig {
-            bind: srv_cfg.bind,
-            base_url: srv_cfg.base_url.clone(),
-            auth_token: srv_cfg.auth_token.clone(),
-        };
-        let server_db = db.clone();
-        tokio::spawn(async move {
-            if let Err(e) = duralumin_server::serve(server_db, server_config).await {
-                tracing::error!(error = %e, "RSS server exited with error");
+async fn cmd_start(cfg: &config::Config, db: &Db) -> Result<()> {
+    // Prevent two daemons running at once.
+    let _lock = acquire_run_lock(&cfg.storage.db())
+        .context("failed to acquire daemon lock")?;
+
+    // Warn about Complete episodes whose files have gone missing.
+    warn_missing_files(db).await;
+
+    // Start the RSS restream server if any feed has restream=true and [server] is configured.
+    let any_restream = cfg.feeds.iter().any(|f| f.restream);
+    if any_restream {
+        match &cfg.server {
+            Some(srv_cfg) => {
+                let server_config = ServerConfig {
+                    bind: srv_cfg.bind,
+                    base_url: srv_cfg.base_url.clone(),
+                    auth_token: srv_cfg.auth_token.clone(),
+                };
+                let server_db = db.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = duralumin_server::serve(server_db, server_config).await {
+                        tracing::error!(error = %e, "RSS server exited with error");
+                    }
+                });
             }
-        });
+            None => tracing::warn!(
+                "some feeds have restream=true but no [server] block is configured — restreaming disabled"
+            ),
+        }
     }
 
-    // --once: single linear pass then exit (for cron / systemd timer usage).
-    if once {
-        cmd_feed_sync(cfg, db, vec![]).await?;
-        cmd_download(cfg, db, vec![]).await?;
-        return Ok(());
-    }
-
-    // Daemon mode: build shared infrastructure once, then spawn independent tasks.
     let engine = Arc::new(build_engine(cfg, db).await?);
     let fetcher = Arc::new(FeedFetcher::new(
         &cfg.downloader.user_agent,
@@ -534,7 +556,6 @@ async fn cmd_run(cfg: &config::Config, db: &Db, once: bool) -> Result<()> {
 
         tasks.spawn(async move {
             let mut ticker = tokio::time::interval(feed_cfg.poll_interval);
-            // Skip missed ticks — if a sync runs long, don't burst on the next wake.
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 ticker.tick().await;
@@ -543,8 +564,7 @@ async fn cmd_run(cfg: &config::Config, db: &Db, once: bool) -> Result<()> {
         });
     }
 
-    // Download drain task — runs more frequently than the slowest feed interval
-    // so new episodes get picked up promptly after a sync.
+    // Download drain task — runs every 30s so new episodes get picked up quickly.
     {
         let db = db.clone();
         let downloader = Arc::clone(&downloader);
@@ -562,26 +582,8 @@ async fn cmd_run(cfg: &config::Config, db: &Db, once: bool) -> Result<()> {
     }
 
     while let Some(Err(e)) = tasks.join_next().await {
-        tracing::error!(error = ?e, "a run task panicked");
+        tracing::error!(error = ?e, "a daemon task panicked");
     }
-    Ok(())
-}
-
-// ---- serve -----------------------------------------------------------------
-
-async fn cmd_serve(cfg: &config::Config, db: &Db) -> Result<()> {
-    let srv_cfg = cfg
-        .server
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("no [server] block in config — add bind and base_url"))?;
-
-    let server_config = ServerConfig {
-        bind: srv_cfg.bind,
-        base_url: srv_cfg.base_url.clone(),
-        auth_token: srv_cfg.auth_token.clone(),
-    };
-
-    duralumin_server::serve(db.clone(), server_config).await?;
     Ok(())
 }
 
@@ -1053,6 +1055,184 @@ async fn cmd_check(db: &Db, fix: bool) -> Result<()> {
         println!("{}", "Run with --fix to re-queue them for download.".dimmed());
     }
     Ok(())
+}
+
+// ---- Startup file check ----------------------------------------------------
+
+async fn warn_missing_files(db: &Db) {
+    let all = match db.list_episodes(EpisodeFilter::default()).await {
+        Ok(eps) => eps,
+        Err(e) => { tracing::warn!(error = %e, "could not load episodes for file check"); return; }
+    };
+    let mut missing = 0usize;
+    for ep in &all {
+        if let EpisodeState::Complete { path, .. } = &ep.state {
+            if !path.exists() {
+                tracing::warn!(
+                    episode_id = %ep.id,
+                    path = %path.display(),
+                    "file missing for Complete episode"
+                );
+                missing += 1;
+            }
+        }
+    }
+    if missing > 0 {
+        tracing::warn!(
+            count = missing,
+            "run `dura check --fix` to requeue missing episodes for re-download"
+        );
+    }
+}
+
+// ---- Recheck pending episodes against current rules -----------------------
+
+async fn recheck_episodes(
+    db: &Db,
+    engine: &RuleEngine,
+    slugs: &[String],
+) -> Result<()> {
+    let feeds: Vec<_> = if slugs.is_empty() {
+        db.list_feeds().await?
+    } else {
+        let mut out = Vec::new();
+        for slug in slugs {
+            if let Some(f) = db.get_feed_by_slug(slug).await? { out.push(f); }
+        }
+        out
+    };
+
+    let mut reassigned = 0usize;
+    let mut table = make_table();
+    table.set_header(["ID", "TITLE", "OLD", "NEW"]);
+
+    for feed in &feeds {
+        let eps = db.list_episodes(EpisodeFilter { feed_id: Some(feed.id), ..Default::default() }).await?;
+        for ep in &eps {
+            // Only re-evaluate episodes that haven't been acted on yet.
+            let old_action = match &ep.state {
+                EpisodeState::Discovered => None,
+                EpisodeState::Matched(a) => Some(*a),
+                _ => continue,
+            };
+            let new_action = engine.evaluate(ep, feed);
+            if old_action == Some(new_action) { continue; }
+
+            db.update_episode_state(&ep.id, &EpisodeState::Matched(new_action)).await?;
+            reassigned += 1;
+
+            let old_label = old_action.map(|a| a.to_string()).unwrap_or_else(|| "discovered".into());
+            let new_label = new_action.to_string();
+            let new_cell = match new_label.as_str() {
+                "download" => Cell::new(&new_label).fg(Color::Green),
+                "skip"     => Cell::new(&new_label).fg(Color::DarkGrey),
+                _          => Cell::new(&new_label),
+            };
+            table.add_row([
+                Cell::new(ep.id.short()),
+                Cell::new(&ep.title),
+                Cell::new(&old_label).fg(Color::DarkGrey),
+                new_cell,
+            ]);
+        }
+    }
+
+    if reassigned == 0 {
+        println!("{}", "Recheck: all pending episodes already match current rules.".dimmed());
+    } else {
+        println!("{}", table);
+        println!("{} episode(s) reassigned.", reassigned.to_string().yellow());
+    }
+    Ok(())
+}
+
+// ---- Episode delete --------------------------------------------------------
+
+async fn cmd_episode_delete(db: &Db, id: &str, delete_file: bool) -> Result<()> {
+    use duralumin_core::EpisodeId;
+    let eid = EpisodeId::from(id.to_string());
+    let ep = db
+        .get_episode(&eid)
+        .await?
+        .with_context(|| format!("episode {id:?} not found"))?;
+
+    if delete_file {
+        if let EpisodeState::Complete { path, .. } = &ep.state {
+            if path.exists() {
+                tokio::fs::remove_file(path)
+                    .await
+                    .with_context(|| format!("failed to delete {:?}", path))?;
+                println!("  {} {}", "Deleted file:".dimmed(), path.display());
+            } else {
+                println!("  {}", "File already missing from disk.".dimmed());
+            }
+        }
+    }
+
+    db.delete_episode(&ep.id).await?;
+    println!("{} {} — {}", "Removed".red(), ep.id.short(), ep.title);
+    Ok(())
+}
+
+// ---- Single-instance lock --------------------------------------------------
+
+/// Write a PID file next to the DB. Returns a guard that removes it on drop.
+/// Errors if another `dura start` process appears to be running.
+fn acquire_run_lock(db_path: &std::path::Path) -> Result<RunLockGuard> {
+    let pid_path = db_path.with_file_name("dura.pid");
+
+    if let Ok(content) = std::fs::read_to_string(&pid_path) {
+        if let Ok(pid) = content.trim().parse::<u32>() {
+            if pid != std::process::id() && is_running(pid) {
+                anyhow::bail!(
+                    "`dura start` is already running (PID {pid}).\n  \
+                     Stop it first, or remove {:?} if the file is stale.",
+                    pid_path
+                );
+            }
+        }
+    }
+
+    if let Some(parent) = pid_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&pid_path, std::process::id().to_string())
+        .with_context(|| format!("failed to write PID file {:?}", pid_path))?;
+
+    Ok(RunLockGuard { path: pid_path })
+}
+
+struct RunLockGuard {
+    path: std::path::PathBuf,
+}
+
+impl Drop for RunLockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn is_running(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::path::Path::new("/proc").join(pid.to_string()).exists()
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        // signal 0: no signal sent, just checks if the process exists
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        let _ = pid;
+        false // conservative: stale PID files won't block restart on Windows
+    }
 }
 
 // ---- Output helpers --------------------------------------------------------

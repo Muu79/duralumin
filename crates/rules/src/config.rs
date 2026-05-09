@@ -40,6 +40,10 @@ pub struct FeedConfig {
     pub poll_interval: Duration,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Expose this feed through the RSS restream server when `dura start` is used.
+    /// Requires a `[server]` block in config. Default: false.
+    #[serde(default)]
+    pub restream: bool,
     #[serde(default)]
     pub rules: Vec<RuleConfig>,
     /// When set, acts as a catch-all at the end of this feed's rule list,

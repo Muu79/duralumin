@@ -56,9 +56,9 @@ level = "info"
 
 
 # --- Server -------------------------------------------------------------------
-# Omit this block entirely to disable the HTTP server.
-# When present, `run` starts the server in the background alongside the
-# download loop. Use `serve` to run the server standalone.
+# Omit this block entirely to disable the RSS restream server.
+# When present, `dura start` will spin up the server alongside the download
+# loop — but only for feeds that have `restream = true`.
 
 # [server]
 # Address to listen on. Use 127.0.0.1 behind a reverse proxy, or 0.0.0.0 to
@@ -122,9 +122,12 @@ value = "500 MB"
 
 # --- Feeds --------------------------------------------------------------------
 # Each [[feeds]] block is one RSS/Atom feed.
-# slug      — filesystem-safe identifier; used in log output. Must be unique.
-# poll_interval — how often `run` (without --once) re-checks this feed.
-#               Not used when running via cron/systemd timer (use --once there).
+# slug          — filesystem-safe identifier; used in log output. Must be unique.
+# poll_interval — how often `dura start` re-checks this feed.
+#                 Not used when running via cron/systemd timer (use `dura sync` there).
+# restream      — expose this feed through the RSS restream server (default: false).
+#                 Requires a [server] block. The feed URL becomes:
+#                   <base_url>/rss/<slug>
 
 # --- Feed: download everything -------------------------------------------------
 
@@ -132,6 +135,7 @@ value = "500 MB"
 url           = "https://feeds.example.com/my-favourite-podcast.rss"
 slug          = "my-favourite-podcast"
 poll_interval = "1h"
+restream      = true   # expose via <base_url>/rss/my-favourite-podcast
 
 [[feeds.rules]]
 name   = "download-all"
@@ -191,5 +195,5 @@ pattern = "(?i)bonus|trailer|promo"
 [[feeds]]
 url     = "https://feeds.example.com/old-show.rss"
 slug    = "old-show"
-enabled = false   # excluded from `feed sync` and `run` until re-enabled
+enabled = false   # excluded from `dura sync` and `dura start` until re-enabled
 # no per-feed rules — global rules still apply when re-enabled
