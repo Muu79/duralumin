@@ -52,6 +52,7 @@ pub struct DownloadAttempt {
 
 // ---- Db ------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct Db {
     pool: SqlitePool,
 }

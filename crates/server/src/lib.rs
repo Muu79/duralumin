@@ -1,0 +1,49 @@
+mod auth;
+mod handlers;
+mod rss;
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use axum::{Router, routing::get};
+use url::Url;
+
+use duralumin_storage::Db;
+
+// ---- Config ----------------------------------------------------------------
+
+pub struct ServerConfig {
+    pub bind: SocketAddr,
+    pub base_url: Url,
+    pub auth_token: Option<String>,
+}
+
+// ---- App state -------------------------------------------------------------
+
+#[derive(Clone)]
+pub(crate) struct AppState {
+    pub db: Db,
+    pub config: Arc<ServerConfig>,
+    pub http: reqwest::Client,
+}
+
+// ---- Public API ------------------------------------------------------------
+
+pub async fn serve(db: Db, config: ServerConfig) -> anyhow::Result<()> {
+    let bind = config.bind;
+    let state = AppState {
+        db,
+        config: Arc::new(config),
+        http: reqwest::Client::new(),
+    };
+
+    let app = Router::new()
+        .route("/rss/{slug}", get(handlers::rss_handler))
+        .route("/rss/{slug}/{episode_id}", get(handlers::audio_handler))
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    tracing::info!(%bind, "RSS server listening");
+    axum::serve(listener, app).await?;
+    Ok(())
+}

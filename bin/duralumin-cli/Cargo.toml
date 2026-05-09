@@ -14,6 +14,7 @@ duralumin-rules      = { workspace = true }
 duralumin-downloader = { workspace = true }
 duralumin-metadata   = { workspace = true }
 duralumin-storage    = { workspace = true }
+duralumin-server     = { workspace = true }
 clap               = { workspace = true }
 tokio              = { workspace = true }
 tracing            = { workspace = true }
@@ -27,3 +28,4 @@ chrono             = { workspace = true }
 reqwest            = { workspace = true }
 rustls             = { workspace = true }
 anyhow             = { workspace = true }
+url                = { workspace = true }

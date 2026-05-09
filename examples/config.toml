@@ -54,6 +54,28 @@ format = "pretty"
 # Standard log levels: error, warn, info, debug, trace
 level = "info"
 
+
+# --- Server -------------------------------------------------------------------
+# Omit this block entirely to disable the HTTP server.
+# When present, `run` starts the server in the background alongside the
+# download loop. Use `serve` to run the server standalone.
+
+# [server]
+# Address to listen on. Use 127.0.0.1 behind a reverse proxy, or 0.0.0.0 to
+# expose directly (pair with auth_token in that case).
+# bind = "127.0.0.1:3000"
+#
+# Public base URL used to build enclosure URLs in the restreamed RSS feed.
+# Podcast apps fetch audio from here, so it must be reachable from the client.
+# No trailing slash.
+# base_url = "https://podcasts.example.com"
+#
+# Optional bearer token. If set, every request must supply it via:
+#   Authorization: Bearer <token>
+#   or ?key=<token>
+# auth_token = "changeme"
+
+
 # --- Rules --------------------------------------------------------------------
 
 # --- Global rules -------------------------------------------------------------

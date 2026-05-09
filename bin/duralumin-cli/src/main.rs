@@ -15,6 +15,7 @@ use duralumin_downloader::{DownloadResult, Downloader, DownloaderConfig};
 use duralumin_feed::FeedFetcher;
 use duralumin_metadata::write_tags;
 use duralumin_rules::RuleEngine;
+use duralumin_server::ServerConfig;
 use duralumin_storage::{Db, EpisodeFilter};
 use rustls::crypto::aws_lc_rs;
 
@@ -49,6 +50,8 @@ enum Command {
     Rules(RulesArgs),
     Config(ConfigArgs),
     Db(DbArgs),
+    /// Start the RSS restream HTTP server (requires [server] in config).
+    Serve,
 }
 
 // ---- feed subcommand -------------------------------------------------------
@@ -293,6 +296,7 @@ async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
                 Ok(())
             }
         },
+        Command::Serve => cmd_serve(cfg, db).await,
     }
 }
 
@@ -438,6 +442,21 @@ async fn cmd_requeue(db: &Db, id: &str) -> Result<()> {
 // ---- run -------------------------------------------------------------------
 
 async fn cmd_run(cfg: &config::Config, db: &Db, once: bool) -> Result<()> {
+    // Spawn the RSS server in the background if configured.
+    if let Some(srv_cfg) = &cfg.server {
+        let server_config = ServerConfig {
+            bind: srv_cfg.bind,
+            base_url: srv_cfg.base_url.clone(),
+            auth_token: srv_cfg.auth_token.clone(),
+        };
+        let server_db = db.clone();
+        tokio::spawn(async move {
+            if let Err(e) = duralumin_server::serve(server_db, server_config).await {
+                tracing::error!(error = %e, "RSS server exited with error");
+            }
+        });
+    }
+
     loop {
         cmd_feed_sync(cfg, db, vec![]).await?;
         cmd_download(cfg, db, vec![]).await?;
@@ -447,6 +466,24 @@ async fn cmd_run(cfg: &config::Config, db: &Db, once: bool) -> Result<()> {
         // TODO: configurable poll interval / SIGHUP reload
         tokio::time::sleep(std::time::Duration::from_secs(100)).await;
     }
+    Ok(())
+}
+
+// ---- serve -----------------------------------------------------------------
+
+async fn cmd_serve(cfg: &config::Config, db: &Db) -> Result<()> {
+    let srv_cfg = cfg
+        .server
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("no [server] block in config — add bind and base_url"))?;
+
+    let server_config = ServerConfig {
+        bind: srv_cfg.bind,
+        base_url: srv_cfg.base_url.clone(),
+        auth_token: srv_cfg.auth_token.clone(),
+    };
+
+    duralumin_server::serve(db.clone(), server_config).await?;
     Ok(())
 }
 

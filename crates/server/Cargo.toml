@@ -1,0 +1,18 @@
+[package]
+name = "duralumin-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+duralumin-core    = { workspace = true }
+duralumin-storage = { workspace = true }
+axum              = { workspace = true }
+tower             = { workspace = true }
+tower-http        = { workspace = true }
+reqwest           = { workspace = true }
+tokio             = { workspace = true }
+tracing           = { workspace = true }
+anyhow            = { workspace = true }
+serde             = { workspace = true }
+url               = { workspace = true }
+chrono            = { workspace = true }
