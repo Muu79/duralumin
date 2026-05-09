@@ -3,7 +3,7 @@ mod config;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use tokio::sync::Semaphore;
@@ -14,7 +14,7 @@ use duralumin_core::{Action, EpisodeState};
 use duralumin_downloader::{DownloadResult, Downloader, DownloaderConfig};
 use duralumin_feed::FeedFetcher;
 use duralumin_metadata::write_tags;
-use duralumin_rules::RuleEngine;
+use duralumin_rules::{RuleEngine, config::FeedConfig};
 use duralumin_server::ServerConfig;
 use duralumin_storage::{Db, EpisodeFilter};
 use rustls::crypto::aws_lc_rs;
@@ -52,6 +52,19 @@ enum Command {
     Db(DbArgs),
     /// Start the RSS restream HTTP server (requires [server] in config).
     Serve,
+    /// Show a summary of all feeds and their episode counts.
+    Status,
+    /// Check for Complete episodes whose local file has been deleted.
+    Check(CheckArgs),
+}
+
+// ---- check subcommand ------------------------------------------------------
+
+#[derive(Args)]
+struct CheckArgs {
+    /// Re-queue any missing episodes for download.
+    #[arg(long)]
+    fix: bool,
 }
 
 // ---- feed subcommand -------------------------------------------------------
@@ -71,6 +84,8 @@ enum FeedSub {
     },
     /// List all configured feeds and their last-fetched status.
     List,
+    /// Show detailed info and recent episodes for one feed.
+    Info { slug: String },
 }
 
 // ---- episode subcommand ----------------------------------------------------
@@ -141,6 +156,8 @@ struct RulesArgs {
 enum RulesSub {
     /// Dry-run rule evaluation for all episodes in a feed.
     Check { slug: String },
+    /// Print all configured rules (global and per-feed).
+    List,
 }
 
 // ---- config subcommand -----------------------------------------------------
@@ -219,11 +236,12 @@ async fn main() {
         }
     };
 
-    let log_level = cli
-        .log_level
-        .as_deref()
-        .unwrap_or(&cfg.logging.level)
-        .to_string();
+    // Daemon commands use the configured log level; interactive commands default
+    // to warn so info-level chatter from DB opens, migrations, etc. stays quiet.
+    // --log-level always overrides regardless of command.
+    let is_daemon = matches!(&cli.command, Command::Run(_) | Command::Serve);
+    let default_level = if is_daemon { cfg.logging.level.as_str() } else { "warn" };
+    let log_level = cli.log_level.as_deref().unwrap_or(default_level).to_string();
     let log_format = cli.log_format.as_ref();
 
     let filter = EnvFilter::try_new(&log_level).unwrap_or_else(|_| EnvFilter::new("info"));
@@ -271,6 +289,7 @@ async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
         Command::Feed(FeedArgs { sub }) => match sub {
             FeedSub::Sync { slugs } => cmd_feed_sync(cfg, db, slugs).await,
             FeedSub::List => cmd_feed_list(db).await,
+            FeedSub::Info { slug } => cmd_feed_info(db, &slug).await,
         },
         Command::Episode(EpisodeArgs { sub }) => match sub {
             EpisodeSub::List { feed, state, limit } => {
@@ -286,6 +305,7 @@ async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
         },
         Command::Rules(RulesArgs { sub }) => match sub {
             RulesSub::Check { slug } => cmd_rules_check(cfg, db, &slug).await,
+            RulesSub::List => cmd_rules_list(cfg),
         },
         Command::Config(ConfigArgs { sub }) => match sub {
             ConfigSub::Validate => unreachable!("handled before DB open"),
@@ -297,6 +317,8 @@ async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
             }
         },
         Command::Serve => cmd_serve(cfg, db).await,
+        Command::Status => cmd_status(db).await,
+        Command::Check(CheckArgs { fix }) => cmd_check(db, fix).await,
     }
 }
 
@@ -309,68 +331,76 @@ async fn cmd_feed_sync(cfg: &config::Config, db: &Db, slugs: Vec<String>) -> Res
         cfg.downloader.accept_invalid_certs,
     );
 
-    let feeds_to_sync: Vec<&duralumin_rules::config::FeedConfig> = if slugs.is_empty() {
+    let feeds_to_sync: Vec<&FeedConfig> = if slugs.is_empty() {
         cfg.feeds.iter().filter(|f| f.enabled).collect()
     } else {
-        cfg.feeds
-            .iter()
-            .filter(|f| slugs.contains(&f.slug))
-            .collect()
+        cfg.feeds.iter().filter(|f| slugs.contains(&f.slug)).collect()
     };
 
     for feed_cfg in feeds_to_sync {
-        let mut feed = feed_cfg.to_feed();
+        sync_one_feed(feed_cfg, db, &engine, &fetcher).await;
+    }
+    Ok(())
+}
 
-        // Ensure feed is persisted and has a real ID
-        let feed_id = db
-            .upsert_feed(&feed)
-            .await
-            .with_context(|| format!("upsert feed {}", feed_cfg.slug))?;
-        feed.id = feed_id;
+/// Sync a single feed: fetch, upsert episodes, evaluate rules on new ones.
+/// Errors are logged and swallowed so one bad feed never stops the others.
+async fn sync_one_feed(
+    feed_cfg: &FeedConfig,
+    db: &Db,
+    engine: &RuleEngine,
+    fetcher: &FeedFetcher,
+) {
+    let mut feed = feed_cfg.to_feed();
 
-        info!(slug = %feed.slug, "syncing feed");
+    let feed_id = match db.upsert_feed(&feed).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(slug = %feed.slug, error = %e, "failed to upsert feed");
+            return;
+        }
+    };
+    feed.id = feed_id;
 
-        let (meta, mut episodes) = match fetcher.fetch(&feed).await {
-            Ok(r) => r,
+    info!(slug = %feed.slug, "syncing feed");
+
+    let (meta, mut episodes) = match fetcher.fetch(&feed).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(slug = %feed.slug, error = %e, "feed fetch failed");
+            return;
+        }
+    };
+
+    feed.title = meta.title.or(feed.title);
+    feed.etag = meta.etag;
+    feed.last_modified = meta.last_modified;
+    feed.image_url = meta.image_url;
+    feed.last_fetched_at = Some(Utc::now());
+    if let Err(e) = db.upsert_feed(&feed).await {
+        tracing::error!(slug = %feed.slug, error = %e, "failed to update feed metadata");
+    }
+
+    let mut new_episodes = 0;
+    for ep in &mut episodes {
+        ep.feed_id = feed_id;
+        let is_new = match db.upsert_episode(ep).await {
+            Ok(b) => b,
             Err(e) => {
-                tracing::error!(slug = %feed.slug, error = %e, "feed fetch failed");
+                tracing::error!(slug = %feed.slug, episode_id = %ep.id, error = %e, "failed to upsert episode");
                 continue;
             }
         };
-
-        // Update feed metadata
-        feed.title = meta.title.or(feed.title);
-        feed.etag = meta.etag;
-        feed.last_modified = meta.last_modified;
-        feed.image_url = meta.image_url;
-        feed.last_fetched_at = Some(Utc::now());
-        db.upsert_feed(&feed).await?;
-
-        let mut new_episodes = 0;
-        for ep in &mut episodes {
-            ep.feed_id = feed_id;
-            let is_new = db.upsert_episode(&ep).await?;
-
-            // Only evaluate rules on brand-new episodes (first time seen in DB).
-            // Existing episodes keep their current state so Complete/Failed/
-            // Quarantined episodes are never re-queued by a sync.
-            if is_new {
-                new_episodes += 1;
-                let action = engine.evaluate(&ep, &feed);
-                info!(episode_id = %ep.id, title = %ep.title, ?action, "new episode, rule evaluated");
-                let new_state = EpisodeState::Matched(action);
-                db.update_episode_state(&ep.id, &new_state).await?;
+        if is_new {
+            new_episodes += 1;
+            let action = engine.evaluate(ep, &feed);
+            info!(episode_id = %ep.id, title = %ep.title, ?action, "new episode, rule evaluated");
+            if let Err(e) = db.update_episode_state(&ep.id, &EpisodeState::Matched(action)).await {
+                tracing::error!(slug = %feed.slug, episode_id = %ep.id, error = %e, "failed to set episode state");
             }
         }
-        info!(
-            slug = %feed.slug,
-            total = episodes.len(),
-            new = new_episodes,
-            "feed sync complete"
-        );
     }
-
-    Ok(())
+    info!(slug = %feed.slug, total = episodes.len(), new = new_episodes, "feed sync complete");
 }
 
 // ---- feed list -------------------------------------------------------------
@@ -457,14 +487,70 @@ async fn cmd_run(cfg: &config::Config, db: &Db, once: bool) -> Result<()> {
         });
     }
 
-    loop {
+    // --once: single linear pass then exit (for cron / systemd timer usage).
+    if once {
         cmd_feed_sync(cfg, db, vec![]).await?;
         cmd_download(cfg, db, vec![]).await?;
-        if once {
-            break;
-        }
-        // TODO: configurable poll interval / SIGHUP reload
-        tokio::time::sleep(std::time::Duration::from_secs(100)).await;
+        return Ok(());
+    }
+
+    // Daemon mode: build shared infrastructure once, then spawn independent tasks.
+    let engine = Arc::new(build_engine(cfg, db).await?);
+    let fetcher = Arc::new(FeedFetcher::new(
+        &cfg.downloader.user_agent,
+        cfg.downloader.accept_invalid_certs,
+    ));
+    let downloader = Arc::new(Downloader::new(DownloaderConfig {
+        concurrent_downloads: cfg.downloader.concurrent_downloads,
+        attempt_timeout: cfg.downloader.attempt_timeout,
+        max_retries: cfg.downloader.max_retries,
+        backoff_base: cfg.downloader.backoff_base,
+        user_agent: cfg.downloader.user_agent.clone(),
+        accept_invalid_certs: cfg.downloader.accept_invalid_certs,
+    }));
+    let semaphore = Arc::new(Semaphore::new(cfg.downloader.concurrent_downloads as usize));
+    let library = cfg.storage.library();
+    let max_retries = cfg.downloader.max_retries;
+
+    let mut tasks = tokio::task::JoinSet::new();
+
+    // One task per enabled feed, each running on its own poll_interval.
+    for feed_cfg in cfg.feeds.iter().filter(|f| f.enabled).cloned() {
+        let db = db.clone();
+        let engine = Arc::clone(&engine);
+        let fetcher = Arc::clone(&fetcher);
+
+        tasks.spawn(async move {
+            let mut ticker = tokio::time::interval(feed_cfg.poll_interval);
+            // Skip missed ticks — if a sync runs long, don't burst on the next wake.
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                sync_one_feed(&feed_cfg, &db, &engine, &fetcher).await;
+            }
+        });
+    }
+
+    // Download drain task — runs more frequently than the slowest feed interval
+    // so new episodes get picked up promptly after a sync.
+    {
+        let db = db.clone();
+        let downloader = Arc::clone(&downloader);
+        let semaphore = Arc::clone(&semaphore);
+        let library = library.clone();
+
+        tasks.spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                drain_downloads(&db, &downloader, &semaphore, &library, max_retries).await;
+            }
+        });
+    }
+
+    while let Some(Err(e)) = tasks.join_next().await {
+        tracing::error!(error = ?e, "a run task panicked");
     }
     Ok(())
 }
@@ -492,6 +578,18 @@ async fn cmd_serve(cfg: &config::Config, db: &Db) -> Result<()> {
 async fn cmd_download(cfg: &config::Config, db: &Db, ids: Vec<String>) -> Result<()> {
     use duralumin_core::EpisodeId;
 
+    let dl_cfg = DownloaderConfig {
+        concurrent_downloads: cfg.downloader.concurrent_downloads,
+        attempt_timeout: cfg.downloader.attempt_timeout,
+        max_retries: cfg.downloader.max_retries,
+        backoff_base: cfg.downloader.backoff_base,
+        user_agent: cfg.downloader.user_agent.clone(),
+        accept_invalid_certs: cfg.downloader.accept_invalid_certs,
+    };
+    let downloader = Arc::new(Downloader::new(dl_cfg));
+    let semaphore = Arc::new(Semaphore::new(cfg.downloader.concurrent_downloads as usize));
+    let library = cfg.storage.library();
+
     let episodes = if ids.is_empty() {
         db.download_queue(cfg.downloader.max_retries).await?
     } else {
@@ -512,39 +610,59 @@ async fn cmd_download(cfg: &config::Config, db: &Db, ids: Vec<String>) -> Result
         return Ok(());
     }
 
-    let library = cfg.storage.library();
+    run_downloads(db, &downloader, &semaphore, &library, episodes).await;
+    Ok(())
+}
+
+/// Fetch the full download queue and process it. Used by the daemon loop.
+async fn drain_downloads(
+    db: &Db,
+    downloader: &Arc<Downloader>,
+    semaphore: &Arc<Semaphore>,
+    library: &std::path::Path,
+    max_retries: u8,
+) {
+    let episodes = match db.download_queue(max_retries).await {
+        Ok(eps) => eps,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load download queue");
+            return;
+        }
+    };
+    if !episodes.is_empty() {
+        run_downloads(db, downloader, semaphore, library, episodes).await;
+    }
+}
+
+/// Spawn one download task per episode and wait for all to finish.
+async fn run_downloads(
+    db: &Db,
+    downloader: &Arc<Downloader>,
+    semaphore: &Arc<Semaphore>,
+    library: &std::path::Path,
+    episodes: Vec<duralumin_core::Episode>,
+) {
     if !library.exists() {
-        std::fs::create_dir_all(&library)
-            .with_context(|| format!("creating library path {}", library.display()))?;
+        if let Err(e) = std::fs::create_dir_all(library) {
+            tracing::error!(path = %library.display(), error = %e, "failed to create library directory");
+            return;
+        }
         info!(path = %library.display(), "created library directory");
     }
 
-    let dl_cfg = DownloaderConfig {
-        concurrent_downloads: cfg.downloader.concurrent_downloads,
-        attempt_timeout: cfg.downloader.attempt_timeout,
-        max_retries: cfg.downloader.max_retries,
-        backoff_base: cfg.downloader.backoff_base,
-        user_agent: cfg.downloader.user_agent.clone(),
-        accept_invalid_certs: cfg.downloader.accept_invalid_certs,
-    };
-    let downloader = Arc::new(Downloader::new(dl_cfg));
-    let semaphore = Arc::new(Semaphore::new(cfg.downloader.concurrent_downloads as usize));
-
     let mut handles = Vec::new();
 
-    for episode in episodes {
-        let dl = Arc::clone(&downloader);
-        let sem = Arc::clone(&semaphore);
-        let dest = library.clone();
-        let ep = episode.clone();
-        let db_pool = db.pool().clone();
+    for ep in episodes {
+        let dl = Arc::clone(downloader);
+        let sem = Arc::clone(semaphore);
+        let dest = library.to_path_buf();
+        let db = db.clone();
         let feed_id = ep.feed_id;
 
-        let handle = tokio::spawn(async move {
+        handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.expect("semaphore closed");
-            let local_db = Db::from_pool(db_pool);
 
-            let feed = match local_db.get_feed(feed_id).await {
+            let feed = match db.get_feed(feed_id).await {
                 Ok(Some(f)) => f,
                 _ => {
                     tracing::error!(episode_id = %ep.id, "feed not found for episode");
@@ -552,20 +670,21 @@ async fn cmd_download(cfg: &config::Config, db: &Db, ids: Vec<String>) -> Result
                 }
             };
 
-            // Each feed gets its own subdirectory under the library root.
             let feed_dir = dest.join(&feed.slug);
             if let Err(e) = tokio::fs::create_dir_all(&feed_dir).await {
-                tracing::error!(episode_id = %ep.id, path = %feed_dir.display(), error = %e, "failed to create feed directory");
+                tracing::error!(
+                    episode_id = %ep.id,
+                    path = %feed_dir.display(),
+                    error = %e,
+                    "failed to create feed directory"
+                );
                 return;
             }
 
             let ep_id = ep.id.clone();
-            let local_db2 = local_db;
             let result = dl
                 .download(&ep, &feed_dir, |state| {
-                    // Fire-and-forget state updates from the closure
-                    let id = ep_id.clone();
-                    tracing::debug!(episode_id = %id, %state, "state update");
+                    tracing::debug!(episode_id = %ep_id, %state, "state update");
                 })
                 .await;
 
@@ -576,12 +695,10 @@ async fn cmd_download(cfg: &config::Config, db: &Db, ids: Vec<String>) -> Result
                         downloaded_at: Utc::now(),
                         sha256,
                     };
-                    if let Err(e) = local_db2.update_episode_state(&ep.id, &complete).await {
+                    if let Err(e) = db.update_episode_state(&ep.id, &complete).await {
                         tracing::error!(episode_id = %ep.id, error = %e, "failed to persist Complete state");
                         return;
                     }
-
-                    // Fetch cover art then write tags
                     let cover = fetch_cover(&ep, &feed).await;
                     if let Err(e) = write_tags(&path, &ep, &feed, cover.as_deref()) {
                         tracing::warn!(episode_id = %ep.id, error = %e, "tag write failed");
@@ -591,23 +708,14 @@ async fn cmd_download(cfg: &config::Config, db: &Db, ids: Vec<String>) -> Result
                     tracing::error!(episode_id = %ep.id, error = %e, "download failed after retries");
                 }
             }
-        });
-        handles.push(handle);
+        }));
     }
 
-    let mut had_error = false;
     for h in handles {
         if let Err(e) = h.await {
             tracing::error!(error = ?e, "download task panicked");
-            had_error = true;
         }
     }
-
-    if had_error {
-        bail!("one or more downloads failed");
-    }
-
-    Ok(())
 }
 
 // ---- quarantine list -------------------------------------------------------
@@ -654,6 +762,229 @@ async fn cmd_rules_check(cfg: &config::Config, db: &Db, slug: &str) -> Result<()
     for ep in &episodes {
         let action = engine.evaluate(ep, &feed);
         println!("{:<12} {:<40} {}", ep.id.short(), ep.title, action);
+    }
+    Ok(())
+}
+
+// ---- status ----------------------------------------------------------------
+
+async fn cmd_status(db: &Db) -> Result<()> {
+    let feeds = db.list_feeds().await?;
+    if feeds.is_empty() {
+        println!("No feeds in database. Run `dura feed sync` first.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<28} {:>5} {:>5} {:>6} {:>5} {:>5}",
+        "FEED", "TOTAL", "DL", "QUEUED", "SKIP", "QUAR"
+    );
+    println!("{}", "-".repeat(58));
+
+    for feed in &feeds {
+        let eps = db
+            .list_episodes(EpisodeFilter { feed_id: Some(feed.id), ..Default::default() })
+            .await?;
+
+        let mut dl = 0usize;
+        let mut queued = 0usize;
+        let mut skipped = 0usize;
+        let mut quarantined = 0usize;
+
+        for ep in &eps {
+            match &ep.state {
+                EpisodeState::Complete { .. } => dl += 1,
+                EpisodeState::Matched(Action::Download) | EpisodeState::Failed { .. } => {
+                    queued += 1
+                }
+                EpisodeState::Matched(Action::Skip) => skipped += 1,
+                EpisodeState::Quarantined { .. } => quarantined += 1,
+                _ => {}
+            }
+        }
+
+        let name = feed.title.as_deref().unwrap_or(&feed.slug);
+        let truncated = if name.len() > 27 { &name[..27] } else { name };
+        println!(
+            "{:<28} {:>5} {:>5} {:>6} {:>5} {:>5}",
+            truncated,
+            eps.len(),
+            dl,
+            queued,
+            skipped,
+            quarantined,
+        );
+    }
+    Ok(())
+}
+
+// ---- feed info -------------------------------------------------------------
+
+async fn cmd_feed_info(db: &Db, slug: &str) -> Result<()> {
+    let feed = db
+        .get_feed_by_slug(slug)
+        .await?
+        .with_context(|| format!("feed {slug:?} not found — run `dura feed sync` first"))?;
+
+    let all_eps = db
+        .list_episodes(EpisodeFilter { feed_id: Some(feed.id), ..Default::default() })
+        .await?;
+
+    let mut dl = 0usize;
+    let mut queued = 0usize;
+    let mut skipped = 0usize;
+    let mut quarantined = 0usize;
+    let mut missing = 0usize;
+
+    for ep in &all_eps {
+        match &ep.state {
+            EpisodeState::Complete { path, .. } => {
+                if path.exists() { dl += 1; } else { missing += 1; }
+            }
+            EpisodeState::Matched(Action::Download) | EpisodeState::Failed { .. } => queued += 1,
+            EpisodeState::Matched(Action::Skip) => skipped += 1,
+            EpisodeState::Quarantined { .. } => quarantined += 1,
+            _ => {}
+        }
+    }
+
+    let last = feed
+        .last_fetched_at
+        .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| "never".into());
+
+    println!("Feed:         {}", feed.title.as_deref().unwrap_or(&feed.slug));
+    println!("Slug:         {}", feed.slug);
+    println!("URL:          {}", feed.url);
+    println!("Last fetched: {last}");
+    println!();
+    println!(
+        "Episodes: {} total | {} downloaded | {} queued | {} skipped | {} quarantined{}",
+        all_eps.len(), dl, queued, skipped, quarantined,
+        if missing > 0 { format!(" | {missing} MISSING") } else { String::new() }
+    );
+
+    let recent: Vec<_> = all_eps.iter().take(20).collect();
+    if !recent.is_empty() {
+        println!();
+        println!("{:<10} {:<12} {:<16} {}", "ID", "DATE", "STATE", "TITLE");
+        println!("{}", "-".repeat(72));
+        for ep in recent {
+            let date = ep.pub_date.format("%Y-%m-%d").to_string();
+            let state = ep.state.kind_name();
+            let title = if ep.title.len() > 36 { &ep.title[..36] } else { &ep.title };
+            println!("{:<10} {:<12} {:<16} {}", ep.id.short(), date, state, title);
+        }
+    }
+    Ok(())
+}
+
+// ---- rules list ------------------------------------------------------------
+
+fn cmd_rules_list(cfg: &config::Config) -> Result<()> {
+    use duralumin_rules::config::RuleKind;
+
+    fn fmt_kind(k: &RuleKind) -> String {
+        match k {
+            RuleKind::Always => "always".into(),
+            RuleKind::TitleRegex { pattern } => format!("title ~ /{pattern}/"),
+            RuleKind::DescriptionRegex { pattern } => format!("description ~ /{pattern}/"),
+            RuleKind::DurationMin { value } => {
+                format!("duration >= {}", humantime::format_duration(*value))
+            }
+            RuleKind::DurationMax { value } => {
+                format!("duration <= {}", humantime::format_duration(*value))
+            }
+            RuleKind::PublishedAfter { date } => {
+                format!("published after {}", date.format("%Y-%m-%d"))
+            }
+            RuleKind::PublishedBefore { date } => {
+                format!("published before {}", date.format("%Y-%m-%d"))
+            }
+            RuleKind::EpisodeSizeMax { value } => format!("size <= {value}"),
+        }
+    }
+
+    fn print_rules(rules: &[duralumin_rules::config::RuleConfig]) {
+        for r in rules {
+            println!(
+                "  [pri {:>4}]  {:<28}  {:<40}  → {}",
+                r.priority,
+                r.name,
+                fmt_kind(&r.match_),
+                r.action,
+            );
+        }
+    }
+
+    println!("Global rules ({}):", cfg.global_rules.len());
+    if cfg.global_rules.is_empty() {
+        println!("  (none)");
+    } else {
+        print_rules(&cfg.global_rules);
+    }
+
+    for feed in &cfg.feeds {
+        println!();
+        println!("Feed: {} ({} rule(s)):", feed.slug, feed.rules.len());
+        if feed.rules.is_empty() {
+            println!("  (none — global rules apply)");
+        } else {
+            print_rules(&feed.rules);
+        }
+        if let Some(action) = feed.default_action {
+            println!("  [catch-all]  default action: {action}");
+        }
+    }
+
+    println!();
+    println!("Default action (no match): {}", cfg.defaults.action_on_no_match);
+    Ok(())
+}
+
+// ---- check -----------------------------------------------------------------
+
+async fn cmd_check(db: &Db, fix: bool) -> Result<()> {
+    let all = db
+        .list_episodes(EpisodeFilter::default())
+        .await?;
+
+    let complete: Vec<_> = all
+        .iter()
+        .filter(|ep| matches!(&ep.state, EpisodeState::Complete { .. }))
+        .collect();
+
+    println!("Checking {} complete episode(s) for missing files...", complete.len());
+
+    let mut missing = Vec::new();
+    for ep in &complete {
+        if let EpisodeState::Complete { path, .. } = &ep.state {
+            if !path.exists() {
+                missing.push((ep, path.clone()));
+            }
+        }
+    }
+
+    if missing.is_empty() {
+        println!("All files present.");
+        return Ok(());
+    }
+
+    println!();
+    for (ep, path) in &missing {
+        println!("  MISSING  {}  {}  {:?}", ep.id.short(), path.display(), ep.title);
+    }
+    println!();
+    println!("{} missing file(s).", missing.len());
+
+    if fix {
+        for (ep, _) in &missing {
+            db.update_episode_state(&ep.id, &EpisodeState::Matched(Action::Download))
+                .await?;
+        }
+        println!("Re-queued {} episode(s) — run `dura download` to fetch.", missing.len());
+    } else {
+        println!("Run with --fix to re-queue them for download.");
     }
     Ok(())
 }
