@@ -7,7 +7,7 @@ use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::{ItemKey, ItemValue, TagItem};
 
-use duralumin_core::{Episode, Feed};
+use duralumin_core::{Episode, Feed, truncate_utf8};
 
 // ---- Error -----------------------------------------------------------------
 
@@ -106,13 +106,3 @@ fn sniff_image_mime(bytes: &[u8]) -> MimeType {
     }
 }
 
-fn truncate_utf8(s: &str, max_bytes: usize) -> String {
-    if s.len() <= max_bytes {
-        return s.to_string();
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    s[..end].to_string()
-}

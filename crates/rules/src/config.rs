@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{de, Deserialize, Deserializer};
 use url::Url;
 
-use duralumin_core::{Action, Feed, FeedId};
+use duralumin_core::Action;
 
 // ---- Serde helpers ---------------------------------------------------------
 
@@ -50,23 +50,6 @@ pub struct FeedConfig {
     /// preventing global rules from firing.  Equivalent to appending an
     /// `always` rule with the given action at priority `i32::MAX`.
     pub default_action: Option<Action>,
-}
-
-impl FeedConfig {
-    /// Construct a placeholder `Feed` (id = 0, no metadata) for initial upsert.
-    pub fn to_feed(&self) -> Feed {
-        Feed {
-            id: FeedId(0),
-            url: self.url.clone(),
-            slug: self.slug.clone(),
-            title: None,
-            last_fetched_at: None,
-            etag: None,
-            last_modified: None,
-            enabled: self.enabled,
-            image_url: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

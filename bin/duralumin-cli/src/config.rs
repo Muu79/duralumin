@@ -1,14 +1,13 @@
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const DEFAULT_CONFIG: &str = include_str!("default_config.toml");
 
 use serde::{de, Deserialize, Deserializer};
-use url::Url;
 
 use duralumin_core::Action;
 use duralumin_rules::config::{FeedConfig, RuleConfig, validate_rules};
+pub use duralumin_server::ServerConfig;
 
 // ---- Serde helpers ---------------------------------------------------------
 
@@ -139,17 +138,6 @@ impl Default for LoggingConfig {
     fn default() -> Self {
         Self { level: default_log_level(), format: default_log_format() }
     }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ServerConfig {
-    /// Address to bind the HTTP server to, e.g. `0.0.0.0:3000`.
-    pub bind: SocketAddr,
-    /// Public base URL (no trailing slash), used to build enclosure URLs in the RSS feed.
-    pub base_url: Url,
-    /// If set, all requests must supply this token via `Authorization: Bearer <token>`
-    /// or `?key=<token>`.
-    pub auth_token: Option<String>,
 }
 
 // ---- Load + validate -------------------------------------------------------

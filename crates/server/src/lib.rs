@@ -6,12 +6,14 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::{Router, routing::get};
+use serde::Deserialize;
 use url::Url;
 
 use duralumin_storage::Db;
 
 // ---- Config ----------------------------------------------------------------
 
+#[derive(Clone, Debug, Deserialize)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
     pub base_url: Url,

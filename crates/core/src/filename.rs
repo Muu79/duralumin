@@ -65,7 +65,7 @@ fn collapse_dashes(s: &str) -> String {
     out
 }
 
-fn truncate_utf8(s: &str, max_bytes: usize) -> String {
+pub fn truncate_utf8(s: &str, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
         return s.to_string();
     }

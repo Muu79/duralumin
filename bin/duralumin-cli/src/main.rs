@@ -18,9 +18,23 @@ use duralumin_downloader::{DownloadResult, Downloader, DownloaderConfig};
 use duralumin_feed::FeedFetcher;
 use duralumin_metadata::write_tags;
 use duralumin_rules::{RuleEngine, config::FeedConfig};
-use duralumin_server::ServerConfig;
 use duralumin_storage::{Db, EpisodeFilter};
 use rustls::crypto::aws_lc_rs;
+
+// ---- Config conversions ----------------------------------------------------
+
+impl From<&config::DownloaderConfig> for DownloaderConfig {
+    fn from(c: &config::DownloaderConfig) -> Self {
+        Self {
+            concurrent_downloads: c.concurrent_downloads,
+            attempt_timeout: c.attempt_timeout,
+            max_retries: c.max_retries,
+            backoff_base: c.backoff_base,
+            user_agent: c.user_agent.clone(),
+            accept_invalid_certs: c.accept_invalid_certs,
+        }
+    }
+}
 
 // ---- CLI types -------------------------------------------------------------
 
@@ -397,7 +411,7 @@ async fn sync_one_feed(
     engine: &RuleEngine,
     fetcher: &FeedFetcher,
 ) {
-    let mut feed = feed_cfg.to_feed();
+    let mut feed = feed_from_config(feed_cfg);
 
     let feed_id = match db.upsert_feed(&feed).await {
         Ok(id) => id,
@@ -549,12 +563,8 @@ async fn cmd_start(cfg: &config::Config, db: &Db) -> Result<()> {
     if any_restream {
         match &cfg.server {
             Some(srv_cfg) => {
-                let server_config = ServerConfig {
-                    bind: srv_cfg.bind,
-                    base_url: srv_cfg.base_url.clone(),
-                    auth_token: srv_cfg.auth_token.clone(),
-                };
                 let server_db = db.clone();
+                let server_config = srv_cfg.clone();
                 tokio::spawn(async move {
                     if let Err(e) = duralumin_server::serve(server_db, server_config).await {
                         tracing::error!(error = %e, "RSS server exited with error");
@@ -572,14 +582,7 @@ async fn cmd_start(cfg: &config::Config, db: &Db) -> Result<()> {
         &cfg.downloader.user_agent,
         cfg.downloader.accept_invalid_certs,
     ));
-    let downloader = Arc::new(Downloader::new(DownloaderConfig {
-        concurrent_downloads: cfg.downloader.concurrent_downloads,
-        attempt_timeout: cfg.downloader.attempt_timeout,
-        max_retries: cfg.downloader.max_retries,
-        backoff_base: cfg.downloader.backoff_base,
-        user_agent: cfg.downloader.user_agent.clone(),
-        accept_invalid_certs: cfg.downloader.accept_invalid_certs,
-    }));
+    let downloader = Arc::new(Downloader::new(DownloaderConfig::from(&cfg.downloader)));
     let semaphore = Arc::new(Semaphore::new(cfg.downloader.concurrent_downloads as usize));
     let library = cfg.storage.library();
     let max_retries = cfg.downloader.max_retries;
@@ -630,15 +633,7 @@ async fn cmd_start(cfg: &config::Config, db: &Db) -> Result<()> {
 async fn cmd_download(cfg: &config::Config, db: &Db, ids: Vec<String>) -> Result<()> {
     use duralumin_core::EpisodeId;
 
-    let dl_cfg = DownloaderConfig {
-        concurrent_downloads: cfg.downloader.concurrent_downloads,
-        attempt_timeout: cfg.downloader.attempt_timeout,
-        max_retries: cfg.downloader.max_retries,
-        backoff_base: cfg.downloader.backoff_base,
-        user_agent: cfg.downloader.user_agent.clone(),
-        accept_invalid_certs: cfg.downloader.accept_invalid_certs,
-    };
-    let downloader = Arc::new(Downloader::new(dl_cfg));
+    let downloader = Arc::new(Downloader::new(DownloaderConfig::from(&cfg.downloader)));
     let semaphore = Arc::new(Semaphore::new(cfg.downloader.concurrent_downloads as usize));
     let library = cfg.storage.library();
 
@@ -849,40 +844,16 @@ async fn cmd_status(db: &Db) -> Result<()> {
             .list_episodes(EpisodeFilter { feed_id: Some(feed.id), ..Default::default() })
             .await?;
 
-        let mut dl = 0usize;
-        let mut queued = 0usize;
-        let mut skipped = 0usize;
-        let mut quarantined = 0usize;
-
-        for ep in &eps {
-            match &ep.state {
-                EpisodeState::Complete { .. } => dl += 1,
-                EpisodeState::Matched(Action::Download) | EpisodeState::Failed { .. } => {
-                    queued += 1
-                }
-                EpisodeState::Matched(Action::Skip) => skipped += 1,
-                EpisodeState::Quarantined { .. } => quarantined += 1,
-                _ => {}
-            }
-        }
-
+        let c = EpisodeCounts::tally(&eps);
         let name = feed.title.as_deref().unwrap_or(&feed.slug);
-        let quar_cell = if quarantined > 0 {
-            Cell::new(quarantined).fg(Color::Red)
-        } else {
-            Cell::new(quarantined)
-        };
-        let queued_cell = if queued > 0 {
-            Cell::new(queued).fg(Color::Yellow)
-        } else {
-            Cell::new(queued)
-        };
+        let quar_cell = if c.quarantined > 0 { Cell::new(c.quarantined).fg(Color::Red) } else { Cell::new(c.quarantined) };
+        let queued_cell = if c.queued > 0 { Cell::new(c.queued).fg(Color::Yellow) } else { Cell::new(c.queued) };
         table.add_row([
             Cell::new(name),
             Cell::new(eps.len()),
-            Cell::new(dl).fg(Color::Green),
+            Cell::new(c.dl).fg(Color::Green),
             queued_cell,
-            Cell::new(skipped).fg(Color::DarkGrey),
+            Cell::new(c.skipped).fg(Color::DarkGrey),
             quar_cell,
         ]);
     }
@@ -902,23 +873,7 @@ async fn cmd_feed_info(db: &Db, slug: &str) -> Result<()> {
         .list_episodes(EpisodeFilter { feed_id: Some(feed.id), ..Default::default() })
         .await?;
 
-    let mut dl = 0usize;
-    let mut queued = 0usize;
-    let mut skipped = 0usize;
-    let mut quarantined = 0usize;
-    let mut missing = 0usize;
-
-    for ep in &all_eps {
-        match &ep.state {
-            EpisodeState::Complete { path, .. } => {
-                if path.exists() { dl += 1; } else { missing += 1; }
-            }
-            EpisodeState::Matched(Action::Download) | EpisodeState::Failed { .. } => queued += 1,
-            EpisodeState::Matched(Action::Skip) => skipped += 1,
-            EpisodeState::Quarantined { .. } => quarantined += 1,
-            _ => {}
-        }
-    }
+    let c = EpisodeCounts::tally(&all_eps);
 
     let last = feed
         .last_fetched_at
@@ -934,14 +889,14 @@ async fn cmd_feed_info(db: &Db, slug: &str) -> Result<()> {
     // Summary counts
     let mut summary = make_table();
     summary.set_header(["TOTAL", "DL", "QUEUED", "SKIP", "QUAR", "MISSING"]);
-    let miss_cell = if missing > 0 { Cell::new(missing).fg(Color::Red) } else { Cell::new(missing) };
-    let quar_cell = if quarantined > 0 { Cell::new(quarantined).fg(Color::Red) } else { Cell::new(quarantined) };
-    let queued_cell = if queued > 0 { Cell::new(queued).fg(Color::Yellow) } else { Cell::new(queued) };
+    let miss_cell = if c.missing > 0 { Cell::new(c.missing).fg(Color::Red) } else { Cell::new(c.missing) };
+    let quar_cell = if c.quarantined > 0 { Cell::new(c.quarantined).fg(Color::Red) } else { Cell::new(c.quarantined) };
+    let queued_cell = if c.queued > 0 { Cell::new(c.queued).fg(Color::Yellow) } else { Cell::new(c.queued) };
     summary.add_row([
         Cell::new(all_eps.len()),
-        Cell::new(dl).fg(Color::Green),
+        Cell::new(c.dl).fg(Color::Green),
         queued_cell,
-        Cell::new(skipped).fg(Color::DarkGrey),
+        Cell::new(c.skipped).fg(Color::DarkGrey),
         quar_cell,
         miss_cell,
     ]);
@@ -1275,6 +1230,33 @@ fn is_running(pid: u32) -> bool {
 
 // ---- Output helpers --------------------------------------------------------
 
+#[derive(Default)]
+struct EpisodeCounts {
+    dl: usize,
+    queued: usize,
+    skipped: usize,
+    quarantined: usize,
+    missing: usize,
+}
+
+impl EpisodeCounts {
+    fn tally(episodes: &[duralumin_core::Episode]) -> Self {
+        let mut c = Self::default();
+        for ep in episodes {
+            match &ep.state {
+                EpisodeState::Complete { path, .. } => {
+                    if path.exists() { c.dl += 1; } else { c.missing += 1; }
+                }
+                EpisodeState::Matched(Action::Download) | EpisodeState::Failed { .. } => c.queued += 1,
+                EpisodeState::Matched(Action::Skip) => c.skipped += 1,
+                EpisodeState::Quarantined { .. } => c.quarantined += 1,
+                _ => {}
+            }
+        }
+        c
+    }
+}
+
 fn make_table() -> Table {
     let mut t = Table::new();
     t.load_preset(UTF8_FULL_CONDENSED)
@@ -1295,6 +1277,21 @@ fn state_cell(label: &str) -> Cell {
 
 // ---- Helpers ---------------------------------------------------------------
 
+/// Construct a placeholder `Feed` (id = 0, no metadata) from config for initial upsert.
+fn feed_from_config(fc: &FeedConfig) -> duralumin_core::Feed {
+    duralumin_core::Feed {
+        id: duralumin_core::FeedId(0),
+        url: fc.url.clone(),
+        slug: fc.slug.clone(),
+        title: None,
+        last_fetched_at: None,
+        etag: None,
+        last_modified: None,
+        enabled: fc.enabled,
+        image_url: None,
+    }
+}
+
 /// Build a `RuleEngine` from the loaded config, upserting feeds first so they
 /// have real IDs.
 async fn build_engine(cfg: &config::Config, db: &Db) -> Result<RuleEngine> {
@@ -1304,7 +1301,7 @@ async fn build_engine(cfg: &config::Config, db: &Db) -> Result<RuleEngine> {
     )> = Vec::new();
 
     for feed_cfg in &cfg.feeds {
-        let feed = feed_cfg.to_feed();
+        let feed = feed_from_config(feed_cfg);
         let id = db
             .upsert_feed(&feed)
             .await
