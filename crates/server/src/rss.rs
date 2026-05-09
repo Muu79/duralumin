@@ -11,7 +11,10 @@ pub fn build_rss(feed: &Feed, episodes: &[Episode], config: &ServerConfig, slug:
         .as_deref()
         .map(|t| format!("?key={}", t))
         .unwrap_or_default();
-    let feed_url = format!("{}rss/{}{}", config.base_url, slug, key_suffix);
+    // Normalise: strip any trailing slash so sub-path proxies work correctly.
+    // (url::Url adds a trailing slash for authority-only URLs; paths don't get one.)
+    let base = config.base_url.as_str().trim_end_matches('/');
+    let feed_url = format!("{}/rss/{}{}", base, slug, key_suffix);
 
     let mut out = String::with_capacity(4096 + episodes.len() * 512);
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
@@ -51,7 +54,7 @@ pub fn build_rss(feed: &Feed, episodes: &[Episode], config: &ServerConfig, slug:
             ));
         }
 
-        let audio_url = format!("{}rss/{}/{}{}", config.base_url, slug, ep.id, key_suffix);
+        let audio_url = format!("{}/rss/{}/{}{}", base, slug, ep.id, key_suffix);
         let mime = ep.enclosure_mime.as_deref().unwrap_or("audio/mpeg");
         let size = ep.enclosure_size.unwrap_or(0);
         out.push_str(&format!(

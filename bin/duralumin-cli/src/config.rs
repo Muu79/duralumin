@@ -27,6 +27,7 @@ fn default_user_agent() -> String {
 }
 fn default_accept_invalid_certs() -> bool { false }
 fn default_log_level() -> String { "info".into() }
+fn default_log_format() -> String { "pretty".into() }
 fn default_action_on_no_match() -> Action { Action::Skip }
 
 // ---- Error type ------------------------------------------------------------
@@ -126,14 +127,17 @@ impl Default for DefaultsConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct LoggingConfig {
-    /// `"pretty"` (default, colored) or `"json"` (one object per line).
+    /// Standard log levels: error, warn, info, debug, trace.
     #[serde(default = "default_log_level")]
     pub level: String,
+    /// Output format: `"pretty"` (default, human-readable) or `"json"` (one object per line).
+    #[serde(default = "default_log_format")]
+    pub format: String,
 }
 
 impl Default for LoggingConfig {
     fn default() -> Self {
-        Self { level: default_log_level() }
+        Self { level: default_log_level(), format: default_log_format() }
     }
 }
 

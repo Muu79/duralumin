@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 use comfy_table::{Cell, Color, ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
 use owo_colors::OwoColorize;
 use tokio::sync::Semaphore;
@@ -61,6 +62,12 @@ enum Command {
     Status,
     /// Check for Complete episodes whose local file has been deleted.
     Check(CheckArgs),
+    /// Print a shell completion script to stdout.
+    ///
+    /// Usage: dura completions fish > ~/.config/fish/completions/dura.fish
+    Completions {
+        shell: Shell,
+    },
 }
 
 // ---- check subcommand ------------------------------------------------------
@@ -106,6 +113,9 @@ enum EpisodeSub {
         state: Option<String>,
         #[arg(long, default_value = "50")]
         limit: usize,
+        /// Output id<TAB>title pairs for shell completion scripts.
+        #[arg(long, hide = true)]
+        completions: bool,
     },
     /// Re-queue an episode for download (sets state to Matched(Download)).
     Requeue { id: String },
@@ -127,6 +137,11 @@ struct SyncArgs {
     /// Only refresh feed metadata; do not drain the download queue.
     #[arg(long)]
     feeds_only: bool,
+    /// Re-evaluate all pending episodes against current rules.
+    /// Safely re-assigns Matched(Skip) ↔ Matched(Download) without touching
+    /// Complete or Quarantined episodes.
+    #[arg(long)]
+    recheck: bool,
 }
 
 // ---- download subcommand ---------------------------------------------------
@@ -207,6 +222,14 @@ async fn main() {
 
     let cli = Cli::parse();
 
+    // Completions and config-validate need no DB or config.
+    if let Command::Completions { shell } = &cli.command {
+        use clap::CommandFactory;
+        use clap_complete::generate;
+        generate(*shell, &mut Cli::command(), "dura", &mut std::io::stdout());
+        std::process::exit(0);
+    }
+
     // Config validate is special — no DB needed
     if let Command::Config(ConfigArgs {
         sub: ConfigSub::Validate,
@@ -251,7 +274,12 @@ async fn main() {
     let is_daemon = matches!(&cli.command, Command::Start);
     let default_level = if is_daemon { cfg.logging.level.as_str() } else { "warn" };
     let log_level = cli.log_level.as_deref().unwrap_or(default_level).to_string();
-    let log_format = cli.log_format.as_ref();
+    // CLI --log-format wins; fall back to config file format.
+    let config_format = match cfg.logging.format.as_str() {
+        "json" => Some(LogFormat::Json),
+        _      => Some(LogFormat::Pretty),
+    };
+    let log_format = cli.log_format.as_ref().or(config_format.as_ref());
 
     let filter = EnvFilter::try_new(&log_level).unwrap_or_else(|_| EnvFilter::new("info"));
     match log_format {
@@ -328,6 +356,7 @@ async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
         },
         Command::Status => cmd_status(db).await,
         Command::Check(CheckArgs { fix }) => cmd_check(db, fix).await,
+        Command::Completions { .. } => unreachable!("handled before DB open"),
     }
 }
 
@@ -449,6 +478,7 @@ async fn cmd_episode_list(
     feed_slug: Option<&str>,
     state_kind: Option<&str>,
     limit: usize,
+    completions: bool,
 ) -> Result<()> {
     let feed_id = if let Some(slug) = feed_slug {
         db.get_feed_by_slug(slug)
@@ -466,6 +496,14 @@ async fn cmd_episode_list(
         limit: Some(limit),
     };
     let episodes = db.list_episodes(filter).await?;
+
+    // Hidden completions mode: print id<TAB>title for shell scripts.
+    if completions {
+        for ep in &episodes {
+            println!("{}\t{}", ep.id.short(), ep.title);
+        }
+        return Ok(());
+    }
 
     let mut table = make_table();
     table.set_header(["ID", "TITLE", "STATE"]);

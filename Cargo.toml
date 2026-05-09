@@ -39,7 +39,8 @@ feed-rs = "2"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "tls-rustls", "migrate", "chrono"] }
 
 # CLI
-clap = { version = "4", features = ["derive", "env"] }
+clap          = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
 
 # Serialisation
 serde      = { version = "1", features = ["derive"] }

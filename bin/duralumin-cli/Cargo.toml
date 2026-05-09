@@ -19,6 +19,7 @@ duralumin-metadata   = { workspace = true }
 duralumin-storage    = { workspace = true }
 duralumin-server     = { workspace = true }
 clap               = { workspace = true }
+clap_complete      = { workspace = true }
 tokio              = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
