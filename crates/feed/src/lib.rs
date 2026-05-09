@@ -103,7 +103,10 @@ impl FeedFetcher {
             .as_ref()
             .and_then(|img| Url::parse(&img.uri).ok())
             .or_else(|| {
-                parsed.icon.as_ref().and_then(|img| Url::parse(&img.uri).ok())
+                parsed
+                    .icon
+                    .as_ref()
+                    .and_then(|img| Url::parse(&img.uri).ok())
             });
 
         let meta = FeedMeta {
@@ -231,9 +234,7 @@ fn entry_to_episode(entry: &feed_rs::model::Entry, feed: &Feed) -> Option<Episod
 /// Checks `entry.media[*].content[*]` first (RSS `<enclosure>` and
 /// `<media:content>` both map here via feed-rs), then falls back to
 /// `entry.links` with `rel = "enclosure"`.
-fn extract_enclosure(
-    entry: &feed_rs::model::Entry,
-) -> Option<(Url, Option<u64>, Option<String>)> {
+fn extract_enclosure(entry: &feed_rs::model::Entry) -> Option<(Url, Option<u64>, Option<String>)> {
     for media in &entry.media {
         for content in &media.content {
             if let Some(ref url) = content.url {
@@ -244,11 +245,10 @@ fn extract_enclosure(
         }
     }
     for link in &entry.links {
-        if link.rel.as_deref() == Some("enclosure") {
-            if let Ok(url) = Url::parse(&link.href) {
+        if link.rel.as_deref() == Some("enclosure")
+            && let Ok(url) = Url::parse(&link.href) {
                 return Some((url, None, link.media_type.clone()));
             }
-        }
     }
     None
 }

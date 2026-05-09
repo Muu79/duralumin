@@ -105,4 +105,3 @@ fn sniff_image_mime(bytes: &[u8]) -> MimeType {
         MimeType::Jpeg
     }
 }
-

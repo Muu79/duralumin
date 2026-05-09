@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use chrono::{TimeZone, Utc};
 use duralumin_core::{Action, Episode, EpisodeId, EpisodeState, Feed, FeedId};
-use duralumin_rules::config::{RuleConfig, RuleKind};
 use duralumin_rules::RuleEngine;
+use duralumin_rules::config::{RuleConfig, RuleKind};
 use url::Url;
 
 fn feed(id: i64) -> Feed {
@@ -38,7 +38,12 @@ fn episode(title: &str, duration_secs: Option<u64>, size: Option<u64>) -> Episod
 }
 
 fn rule(name: &str, kind: RuleKind, action: Action, priority: i32) -> RuleConfig {
-    RuleConfig { name: name.into(), priority, match_: kind, action }
+    RuleConfig {
+        name: name.into(),
+        priority,
+        match_: kind,
+        action,
+    }
 }
 
 // ---- title_regex -----------------------------------------------------------
@@ -47,7 +52,9 @@ fn rule(name: &str, kind: RuleKind, action: Action, priority: i32) -> RuleConfig
 fn title_regex_download_match() {
     let rules = vec![rule(
         "numbered",
-        RuleKind::TitleRegex { pattern: r"^Episode \d+".into() },
+        RuleKind::TitleRegex {
+            pattern: r"^Episode \d+".into(),
+        },
         Action::Download,
         0,
     )];
@@ -60,7 +67,9 @@ fn title_regex_download_match() {
 fn title_regex_no_match_falls_through_to_default() {
     let rules = vec![rule(
         "numbered",
-        RuleKind::TitleRegex { pattern: r"^Episode \d+".into() },
+        RuleKind::TitleRegex {
+            pattern: r"^Episode \d+".into(),
+        },
         Action::Download,
         0,
     )];
@@ -75,7 +84,9 @@ fn title_regex_no_match_falls_through_to_default() {
 fn duration_min_skips_short_episodes() {
     let rules = vec![rule(
         "long-only",
-        RuleKind::DurationMin { value: Duration::from_secs(3600) },
+        RuleKind::DurationMin {
+            value: Duration::from_secs(3600),
+        },
         Action::Download,
         0,
     )];
@@ -90,7 +101,9 @@ fn duration_min_skips_short_episodes() {
 fn duration_rule_skips_episode_with_no_duration() {
     let rules = vec![rule(
         "min",
-        RuleKind::DurationMin { value: Duration::from_secs(60) },
+        RuleKind::DurationMin {
+            value: Duration::from_secs(60),
+        },
         Action::Download,
         0,
     )];
@@ -104,7 +117,9 @@ fn duration_rule_skips_episode_with_no_duration() {
 fn duration_max_quarantines_long_episodes() {
     let rules = vec![rule(
         "short-only",
-        RuleKind::DurationMax { value: Duration::from_secs(300) },
+        RuleKind::DurationMax {
+            value: Duration::from_secs(300),
+        },
         Action::Quarantine,
         0,
     )];
@@ -134,7 +149,12 @@ fn lower_priority_wins() {
 #[test]
 fn per_feed_rule_takes_precedence_over_global() {
     let per_feed = vec![rule("feed-skip", RuleKind::Always, Action::Skip, 0)];
-    let global = vec![rule("global-download", RuleKind::Always, Action::Download, 0)];
+    let global = vec![rule(
+        "global-download",
+        RuleKind::Always,
+        Action::Download,
+        0,
+    )];
     let engine = RuleEngine::build(&[(FeedId(1), &per_feed)], &global, Action::Skip).unwrap();
     let ep = episode("Anything", None, None);
     assert_eq!(engine.evaluate(&ep, &feed(1)), Action::Skip);
@@ -142,7 +162,12 @@ fn per_feed_rule_takes_precedence_over_global() {
 
 #[test]
 fn global_rule_applies_to_unmatched_feed() {
-    let global = vec![rule("global-download", RuleKind::Always, Action::Download, 0)];
+    let global = vec![rule(
+        "global-download",
+        RuleKind::Always,
+        Action::Download,
+        0,
+    )];
     let engine = RuleEngine::build(&[], &global, Action::Skip).unwrap();
     // feed(2) has no per-feed rules → global fires
     let ep = episode("Anything", None, None);
@@ -188,7 +213,9 @@ fn always_rule_as_catch_all() {
 fn bad_regex_returns_error() {
     let rules = vec![rule(
         "bad",
-        RuleKind::TitleRegex { pattern: "[invalid".into() },
+        RuleKind::TitleRegex {
+            pattern: "[invalid".into(),
+        },
         Action::Download,
         0,
     )];

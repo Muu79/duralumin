@@ -58,9 +58,7 @@ pub async fn audio_handler(
     let eid = EpisodeId::from(episode_id_str.clone());
     let episode = match state.db.get_episode(&eid).await {
         Ok(Some(ep)) => ep,
-        Ok(None) => {
-            return (StatusCode::NOT_FOUND, "episode not found").into_response()
-        }
+        Ok(None) => return (StatusCode::NOT_FOUND, "episode not found").into_response(),
         Err(e) => {
             tracing::error!(slug, episode_id = episode_id_str, error = %e, "db error");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -68,19 +66,18 @@ pub async fn audio_handler(
     };
 
     // Serve local file if downloaded
-    if let EpisodeState::Complete { path, .. } = &episode.state {
-        if path.exists() {
+    if let EpisodeState::Complete { path, .. } = &episode.state
+        && path.exists() {
             tracing::debug!(slug, episode_id = episode_id_str, path = %path.display(), "serving local file");
             let svc = ServeFile::new(path);
             return match svc.oneshot(request).await {
-                Ok(resp) => resp.map(|b| Body::new(b)),
+                Ok(resp) => resp.map(Body::new),
                 Err(e) => {
                     tracing::warn!(error = %e, "local file serve error, falling back to proxy");
                     proxy(&state, &headers, episode.enclosure_url.as_str()).await
                 }
             };
         }
-    }
 
     // Fall back to proxying the origin URL
     tracing::debug!(slug, episode_id = episode_id_str, url = %episode.enclosure_url, "proxying to origin");

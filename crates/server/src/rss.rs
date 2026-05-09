@@ -32,7 +32,10 @@ pub fn build_rss(feed: &Feed, episodes: &[Episode], config: &ServerConfig, slug:
         out.push_str(&format!("    <title>{title}</title>\n"));
         out.push_str(&format!("    <link>{}</link>\n", esc(&feed_url)));
         out.push_str("  </image>\n");
-        out.push_str(&format!("  <itunes:image href=\"{}\"/>\n", esc(img.as_str())));
+        out.push_str(&format!(
+            "  <itunes:image href=\"{}\"/>\n",
+            esc(img.as_str())
+        ));
     }
 
     for ep in episodes {
@@ -48,10 +51,7 @@ pub fn build_rss(feed: &Feed, episodes: &[Episode], config: &ServerConfig, slug:
         ));
 
         if let Some(desc) = &ep.description {
-            out.push_str(&format!(
-                "    <description>{}</description>\n",
-                esc(desc)
-            ));
+            out.push_str(&format!("    <description>{}</description>\n", esc(desc)));
         }
 
         let audio_url = format!("{}/rss/{}/{}{}", base, slug, ep.id, key_suffix);

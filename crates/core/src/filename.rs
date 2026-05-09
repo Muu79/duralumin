@@ -106,7 +106,10 @@ mod tests {
 
     #[test]
     fn ext_mime_priority() {
-        assert_eq!(ext_from_mime(Some("audio/mpeg"), "https://ex.com/ep.m4a"), "mp3");
+        assert_eq!(
+            ext_from_mime(Some("audio/mpeg"), "https://ex.com/ep.m4a"),
+            "mp3"
+        );
     }
 
     #[test]

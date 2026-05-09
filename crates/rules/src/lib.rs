@@ -43,7 +43,9 @@ impl Rule for TitleRegexRule {
     fn evaluate(&self, episode: &Episode, _feed: &Feed) -> Option<Action> {
         self.regex.is_match(&episode.title).then_some(self.action)
     }
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 struct DescriptionRegexRule {
@@ -60,7 +62,9 @@ impl Rule for DescriptionRegexRule {
             .filter(|d| self.regex.is_match(d))
             .map(|_| self.action)
     }
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 struct DurationMinRule {
@@ -74,7 +78,9 @@ impl Rule for DurationMinRule {
         // None duration → no match (spec §4.3)
         (episode.duration()? >= self.min).then_some(self.action)
     }
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 struct DurationMaxRule {
@@ -87,7 +93,9 @@ impl Rule for DurationMaxRule {
     fn evaluate(&self, episode: &Episode, _feed: &Feed) -> Option<Action> {
         (episode.duration()? <= self.max).then_some(self.action)
     }
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 struct PublishedAfterRule {
@@ -100,7 +108,9 @@ impl Rule for PublishedAfterRule {
     fn evaluate(&self, episode: &Episode, _feed: &Feed) -> Option<Action> {
         (episode.pub_date > self.after).then_some(self.action)
     }
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 struct PublishedBeforeRule {
@@ -113,7 +123,9 @@ impl Rule for PublishedBeforeRule {
     fn evaluate(&self, episode: &Episode, _feed: &Feed) -> Option<Action> {
         (episode.pub_date < self.before).then_some(self.action)
     }
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 struct EpisodeSizeMaxRule {
@@ -127,7 +139,9 @@ impl Rule for EpisodeSizeMaxRule {
         // None enclosure_size → no match (spec §4.3)
         (episode.enclosure_size? <= self.max_bytes).then_some(self.action)
     }
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 struct AlwaysRule {
@@ -139,7 +153,9 @@ impl Rule for AlwaysRule {
     fn evaluate(&self, _episode: &Episode, _feed: &Feed) -> Option<Action> {
         Some(self.action)
     }
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 // ---- Factory ---------------------------------------------------------------
@@ -155,7 +171,11 @@ fn build_rule(cfg: &RuleConfig) -> Result<Box<dyn Rule>, RuleError> {
                 pattern: pattern.clone(),
                 source: e,
             })?;
-            Box::new(TitleRegexRule { regex, action, name })
+            Box::new(TitleRegexRule {
+                regex,
+                action,
+                name,
+            })
         }
         RuleKind::DescriptionRegex { pattern } => {
             let regex = Regex::new(pattern).map_err(|e| RuleError::Regex {
@@ -163,17 +183,33 @@ fn build_rule(cfg: &RuleConfig) -> Result<Box<dyn Rule>, RuleError> {
                 pattern: pattern.clone(),
                 source: e,
             })?;
-            Box::new(DescriptionRegexRule { regex, action, name })
+            Box::new(DescriptionRegexRule {
+                regex,
+                action,
+                name,
+            })
         }
         // Duration/date/size are already parsed at deserialise time — just copy.
-        RuleKind::DurationMin { value } => Box::new(DurationMinRule { min: *value, action, name }),
-        RuleKind::DurationMax { value } => Box::new(DurationMaxRule { max: *value, action, name }),
-        RuleKind::PublishedAfter { date } => {
-            Box::new(PublishedAfterRule { after: *date, action, name })
-        }
-        RuleKind::PublishedBefore { date } => {
-            Box::new(PublishedBeforeRule { before: *date, action, name })
-        }
+        RuleKind::DurationMin { value } => Box::new(DurationMinRule {
+            min: *value,
+            action,
+            name,
+        }),
+        RuleKind::DurationMax { value } => Box::new(DurationMaxRule {
+            max: *value,
+            action,
+            name,
+        }),
+        RuleKind::PublishedAfter { date } => Box::new(PublishedAfterRule {
+            after: *date,
+            action,
+            name,
+        }),
+        RuleKind::PublishedBefore { date } => Box::new(PublishedBeforeRule {
+            before: *date,
+            action,
+            name,
+        }),
         RuleKind::EpisodeSizeMax { value } => Box::new(EpisodeSizeMaxRule {
             max_bytes: value.0,
             action,
@@ -212,7 +248,10 @@ impl RuleEngine {
         for (feed_id, rules) in per_feed {
             let mut sorted: Vec<&RuleConfig> = rules.iter().collect();
             sorted.sort_by_key(|r| r.priority);
-            let built = sorted.iter().map(|r| build_rule(r)).collect::<Result<_, _>>()?;
+            let built = sorted
+                .iter()
+                .map(|r| build_rule(r))
+                .collect::<Result<_, _>>()?;
             per_feed_map.insert(*feed_id, built);
         }
 
@@ -234,7 +273,11 @@ impl RuleEngine {
     ///
     /// Order: per-feed rules → global rules → default.
     pub fn evaluate(&self, episode: &Episode, feed: &Feed) -> Action {
-        let per_feed_rules = self.per_feed.get(&feed.id).map(Vec::as_slice).unwrap_or(&[]);
+        let per_feed_rules = self
+            .per_feed
+            .get(&feed.id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
 
         for rule in per_feed_rules.iter().chain(self.global.iter()) {
             if let Some(action) = rule.evaluate(episode, feed) {
@@ -347,7 +390,10 @@ mod tests {
 
     #[test]
     fn always_rule_matches() {
-        let rule = AlwaysRule { action: Action::Download, name: "catch-all".into() };
+        let rule = AlwaysRule {
+            action: Action::Download,
+            name: "catch-all".into(),
+        };
         let feed = make_feed(1);
         let ep = make_episode("Anything", None, None);
         assert_eq!(rule.evaluate(&ep, &feed), Some(Action::Download));
@@ -370,12 +416,9 @@ mod tests {
             action: Action::Download,
         }];
 
-        let engine = RuleEngine::build(
-            &[(FeedId(1), &per_feed_rules)],
-            &global_rules,
-            Action::Skip,
-        )
-        .unwrap();
+        let engine =
+            RuleEngine::build(&[(FeedId(1), &per_feed_rules)], &global_rules, Action::Skip)
+                .unwrap();
 
         let feed = make_feed(1);
         let ep = make_episode("Anything", None, None);

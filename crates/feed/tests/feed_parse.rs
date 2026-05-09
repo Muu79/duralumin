@@ -33,7 +33,12 @@ fn parse_fixture(name: &str) -> Vec<Episode> {
 #[test]
 fn valid_feed_has_three_episodes() {
     let episodes = parse_fixture("valid_feed.xml");
-    assert_eq!(episodes.len(), 3, "expected 3 episodes, got {}", episodes.len());
+    assert_eq!(
+        episodes.len(),
+        3,
+        "expected 3 episodes, got {}",
+        episodes.len()
+    );
 }
 
 #[test]
@@ -47,14 +52,20 @@ fn valid_feed_titles_correct() {
 #[test]
 fn valid_feed_episode_has_duration() {
     let episodes = parse_fixture("valid_feed.xml");
-    let ep1 = episodes.iter().find(|e| e.title.contains("Episode 1")).unwrap();
+    let ep1 = episodes
+        .iter()
+        .find(|e| e.title.contains("Episode 1"))
+        .unwrap();
     assert_eq!(ep1.duration_secs, Some(3600));
 }
 
 #[test]
 fn valid_feed_episode_has_enclosure_size() {
     let episodes = parse_fixture("valid_feed.xml");
-    let ep1 = episodes.iter().find(|e| e.title.contains("Episode 1")).unwrap();
+    let ep1 = episodes
+        .iter()
+        .find(|e| e.title.contains("Episode 1"))
+        .unwrap();
     assert_eq!(ep1.enclosure_size, Some(50_000_000));
 }
 
@@ -73,7 +84,11 @@ fn no_guid_episode_is_still_parsed() {
     // The entry has no <guid>; feed-rs assigns one internally.
     // The important thing is the entry parses successfully.
     let episodes = parse_fixture("no_guid.xml");
-    assert_eq!(episodes.len(), 1, "should parse 1 episode even without a guid");
+    assert_eq!(
+        episodes.len(),
+        1,
+        "should parse 1 episode even without a guid"
+    );
 }
 
 #[test]
@@ -87,7 +102,11 @@ fn no_guid_episode_has_correct_title() {
 #[test]
 fn no_enclosure_entry_is_skipped() {
     let episodes = parse_fixture("no_enclosure.xml");
-    assert_eq!(episodes.len(), 1, "only the entry with an enclosure should survive");
+    assert_eq!(
+        episodes.len(),
+        1,
+        "only the entry with an enclosure should survive"
+    );
     assert!(episodes[0].title.contains("Good Episode"));
 }
 
@@ -96,7 +115,12 @@ fn no_enclosure_entry_is_skipped() {
 #[test]
 fn atom_feed_parses_two_episodes() {
     let episodes = parse_fixture("atom_feed.xml");
-    assert_eq!(episodes.len(), 2, "expected 2 atom episodes, got {}", episodes.len());
+    assert_eq!(
+        episodes.len(),
+        2,
+        "expected 2 atom episodes, got {}",
+        episodes.len()
+    );
 }
 
 #[test]

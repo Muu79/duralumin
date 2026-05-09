@@ -128,7 +128,7 @@ impl Downloader {
                 reason,
                 last_error: detail,
             });
-            return Some(e);
+            Some(e)
         }
     }
     /// Download one episode, calling `on_state` for each state transition.
@@ -165,14 +165,7 @@ impl Downloader {
                 Ok(Ok(r)) => return Ok(r),
                 Ok(Err(e)) => {
                     if let Some(err) = self
-                        .retry_download(
-                            episode,
-                            &on_state,
-                            attempt,
-                            max,
-                            e,
-                            &mut last_err,
-                        )
+                        .retry_download(episode, &on_state, attempt, max, e, &mut last_err)
                         .await
                     {
                         return Err(err);
@@ -198,8 +191,7 @@ impl Downloader {
         }
 
         // last_err is always Some here (max > 0), but the loop returned if max==0
-        Err(last_err.unwrap_or(DownloadError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        Err(last_err.unwrap_or(DownloadError::Io(std::io::Error::other(
             "no attempts made.\nTry setting config:\n[downloader]\nmax_retries ≥ 1",
         ))))
     }
@@ -289,8 +281,8 @@ impl Downloader {
         let sha256 = hex::encode(hasher.finalize());
 
         // Size verification ±1% (spec §5.6)
-        if let Some(expected) = episode.enclosure_size {
-            if expected > 0 {
+        if let Some(expected) = episode.enclosure_size
+            && expected > 0 {
                 let tolerance = (expected as f64 * 0.01).ceil() as u64;
                 let lo = expected.saturating_sub(tolerance);
                 let hi = expected + tolerance;
@@ -302,7 +294,6 @@ impl Downloader {
                     });
                 }
             }
-        }
 
         // Atomic rename .part → final
         tokio::fs::rename(&part_path, &final_path).await?;

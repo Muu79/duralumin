@@ -22,19 +22,19 @@ impl FromRequestParts<AppState> for AuthGuard {
             return Ok(AuthGuard);
         };
 
-        if let Some(auth) = parts.headers.get("Authorization") {
-            if let Ok(v) = auth.to_str() {
-                if v.strip_prefix("Bearer ").map(|t| t == expected).unwrap_or(false) {
+        if let Some(auth) = parts.headers.get("Authorization")
+            && let Ok(v) = auth.to_str()
+                && v.strip_prefix("Bearer ")
+                    .map(|t| t == expected)
+                    .unwrap_or(false)
+                {
                     return Ok(AuthGuard);
                 }
-            }
-        }
 
-        if let Ok(Query(q)) = Query::<KeyQuery>::from_request_parts(parts, state).await {
-            if q.key.as_deref() == Some(expected.as_str()) {
+        if let Ok(Query(q)) = Query::<KeyQuery>::from_request_parts(parts, state).await
+            && q.key.as_deref() == Some(expected.as_str()) {
                 return Ok(AuthGuard);
             }
-        }
 
         Err(StatusCode::UNAUTHORIZED)
     }

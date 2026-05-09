@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use bytesize::ByteSize;
 use chrono::{DateTime, Utc};
-use serde::{de, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de};
 use url::Url;
 
 use duralumin_core::Action;
@@ -33,10 +33,7 @@ fn default_enabled() -> bool {
 pub struct FeedConfig {
     pub url: Url,
     pub slug: String,
-    #[serde(
-        default = "default_poll_interval",
-        deserialize_with = "de_duration"
-    )]
+    #[serde(default = "default_poll_interval", deserialize_with = "de_duration")]
     pub poll_interval: Duration,
     #[serde(default = "default_enabled")]
     pub enabled: bool,

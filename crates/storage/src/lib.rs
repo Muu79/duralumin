@@ -2,8 +2,7 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use sqlx::{
-    Row,
-    SqlitePool,
+    Row, SqlitePool,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteRow},
 };
 use url::Url;
@@ -233,9 +232,10 @@ impl Db {
     pub async fn update_episode_state(&self, id: &EpisodeId, state: &EpisodeState) -> Result<()> {
         let state_json = serde_json::to_string(state)?;
         let (file_path, sha256) = match state {
-            EpisodeState::Complete { path, sha256, .. } => {
-                (Some(path.to_string_lossy().into_owned()), Some(sha256.clone()))
-            }
+            EpisodeState::Complete { path, sha256, .. } => (
+                Some(path.to_string_lossy().into_owned()),
+                Some(sha256.clone()),
+            ),
             _ => (None, None),
         };
         sqlx::query("UPDATE episodes SET state = ?, file_path = ?, sha256 = ? WHERE id = ?")
@@ -249,17 +249,14 @@ impl Db {
     }
 
     pub async fn list_episodes(&self, filter: EpisodeFilter) -> Result<Vec<Episode>> {
-        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
-            "SELECT * FROM episodes WHERE 1=1",
-        );
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT * FROM episodes WHERE 1=1");
         if let Some(fid) = filter.feed_id {
             qb.push(" AND feed_id = ").push_bind(fid.0);
         }
         qb.push(" ORDER BY pub_date DESC");
 
         let rows = qb.build().fetch_all(&self.pool).await?;
-        let mut episodes: Vec<Episode> =
-            rows.iter().map(row_to_episode).collect::<Result<_>>()?;
+        let mut episodes: Vec<Episode> = rows.iter().map(row_to_episode).collect::<Result<_>>()?;
 
         if let Some(ref kind) = filter.state_kind {
             episodes.retain(|ep| ep.state.kind_name() == kind);
@@ -279,8 +276,7 @@ impl Db {
         let rows = sqlx::query("SELECT * FROM episodes ORDER BY pub_date ASC")
             .fetch_all(&self.pool)
             .await?;
-        let episodes: Vec<Episode> =
-            rows.iter().map(row_to_episode).collect::<Result<_>>()?;
+        let episodes: Vec<Episode> = rows.iter().map(row_to_episode).collect::<Result<_>>()?;
         Ok(episodes
             .into_iter()
             .filter(|ep| match &ep.state {

@@ -286,12 +286,20 @@ async fn main() {
     // to warn so info-level chatter from DB opens, migrations, etc. stays quiet.
     // --log-level always overrides regardless of command.
     let is_daemon = matches!(&cli.command, Command::Start);
-    let default_level = if is_daemon { cfg.logging.level.as_str() } else { "warn" };
-    let log_level = cli.log_level.as_deref().unwrap_or(default_level).to_string();
+    let default_level = if is_daemon {
+        cfg.logging.level.as_str()
+    } else {
+        "warn"
+    };
+    let log_level = cli
+        .log_level
+        .as_deref()
+        .unwrap_or(default_level)
+        .to_string();
     // CLI --log-format wins; fall back to config file format.
     let config_format = match cfg.logging.format.as_str() {
         "json" => Some(LogFormat::Json),
-        _      => Some(LogFormat::Pretty),
+        _ => Some(LogFormat::Pretty),
     };
     let log_format = cli.log_format.as_ref().or(config_format.as_ref());
 
@@ -342,11 +350,16 @@ async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
             FeedSub::Info { slug } => cmd_feed_info(db, &slug).await,
         },
         Command::Episode(EpisodeArgs { sub }) => match sub {
-            EpisodeSub::List { feed, state, limit, completions } => {
-                cmd_episode_list(db, feed.as_deref(), state.as_deref(), limit, completions).await
-            }
+            EpisodeSub::List {
+                feed,
+                state,
+                limit,
+                completions,
+            } => cmd_episode_list(db, feed.as_deref(), state.as_deref(), limit, completions).await,
             EpisodeSub::Requeue { id } => cmd_requeue(db, &id).await,
-            EpisodeSub::Delete { id, delete_file } => cmd_episode_delete(db, &id, delete_file).await,
+            EpisodeSub::Delete { id, delete_file } => {
+                cmd_episode_delete(db, &id, delete_file).await
+            }
         },
         Command::Start => cmd_start(cfg, db).await,
         Command::Sync(args) => cmd_sync(cfg, db, args).await,
@@ -386,7 +399,10 @@ async fn cmd_sync(cfg: &config::Config, db: &Db, args: SyncArgs) -> Result<()> {
     let feeds_to_sync: Vec<&FeedConfig> = if args.slugs.is_empty() {
         cfg.feeds.iter().filter(|f| f.enabled).collect()
     } else {
-        cfg.feeds.iter().filter(|f| args.slugs.contains(&f.slug)).collect()
+        cfg.feeds
+            .iter()
+            .filter(|f| args.slugs.contains(&f.slug))
+            .collect()
     };
 
     for feed_cfg in feeds_to_sync {
@@ -405,12 +421,7 @@ async fn cmd_sync(cfg: &config::Config, db: &Db, args: SyncArgs) -> Result<()> {
 
 /// Sync a single feed: fetch, upsert episodes, evaluate rules on new ones.
 /// Errors are logged and swallowed so one bad feed never stops the others.
-async fn sync_one_feed(
-    feed_cfg: &FeedConfig,
-    db: &Db,
-    engine: &RuleEngine,
-    fetcher: &FeedFetcher,
-) {
+async fn sync_one_feed(feed_cfg: &FeedConfig, db: &Db, engine: &RuleEngine, fetcher: &FeedFetcher) {
     let mut feed = feed_from_config(feed_cfg);
 
     let feed_id = match db.upsert_feed(&feed).await {
@@ -455,7 +466,10 @@ async fn sync_one_feed(
             new_episodes += 1;
             let action = engine.evaluate(ep, &feed);
             info!(episode_id = %ep.id, title = %ep.title, ?action, "new episode, rule evaluated");
-            if let Err(e) = db.update_episode_state(&ep.id, &EpisodeState::Matched(action)).await {
+            if let Err(e) = db
+                .update_episode_state(&ep.id, &EpisodeState::Matched(action))
+                .await
+            {
                 tracing::error!(slug = %feed.slug, episode_id = %ep.id, error = %e, "failed to set episode state");
             }
         }
@@ -552,8 +566,7 @@ async fn cmd_requeue(db: &Db, id: &str) -> Result<()> {
 
 async fn cmd_start(cfg: &config::Config, db: &Db) -> Result<()> {
     // Prevent two daemons running at once.
-    let _lock = acquire_run_lock(&cfg.storage.db())
-        .context("failed to acquire daemon lock")?;
+    let _lock = acquire_run_lock(&cfg.storage.db()).context("failed to acquire daemon lock")?;
 
     // Warn about Complete episodes whose files have gone missing.
     warn_missing_files(db).await;
@@ -818,8 +831,8 @@ async fn cmd_rules_check(cfg: &config::Config, db: &Db, slug: &str) -> Result<()
         let action_str = action.to_string();
         let action_cell = match action_str.as_str() {
             "download" => Cell::new(&action_str).fg(Color::Green),
-            "skip"     => Cell::new(&action_str).fg(Color::DarkGrey),
-            _          => Cell::new(&action_str),
+            "skip" => Cell::new(&action_str).fg(Color::DarkGrey),
+            _ => Cell::new(&action_str),
         };
         table.add_row([Cell::new(ep.id.short()), Cell::new(&ep.title), action_cell]);
     }
@@ -832,7 +845,10 @@ async fn cmd_rules_check(cfg: &config::Config, db: &Db, slug: &str) -> Result<()
 async fn cmd_status(db: &Db) -> Result<()> {
     let feeds = db.list_feeds().await?;
     if feeds.is_empty() {
-        println!("{}", "No feeds in database. Run `dura feed sync` first.".dimmed());
+        println!(
+            "{}",
+            "No feeds in database. Run `dura feed sync` first.".dimmed()
+        );
         return Ok(());
     }
 
@@ -841,13 +857,24 @@ async fn cmd_status(db: &Db) -> Result<()> {
 
     for feed in &feeds {
         let eps = db
-            .list_episodes(EpisodeFilter { feed_id: Some(feed.id), ..Default::default() })
+            .list_episodes(EpisodeFilter {
+                feed_id: Some(feed.id),
+                ..Default::default()
+            })
             .await?;
 
         let c = EpisodeCounts::tally(&eps);
         let name = feed.title.as_deref().unwrap_or(&feed.slug);
-        let quar_cell = if c.quarantined > 0 { Cell::new(c.quarantined).fg(Color::Red) } else { Cell::new(c.quarantined) };
-        let queued_cell = if c.queued > 0 { Cell::new(c.queued).fg(Color::Yellow) } else { Cell::new(c.queued) };
+        let quar_cell = if c.quarantined > 0 {
+            Cell::new(c.quarantined).fg(Color::Red)
+        } else {
+            Cell::new(c.quarantined)
+        };
+        let queued_cell = if c.queued > 0 {
+            Cell::new(c.queued).fg(Color::Yellow)
+        } else {
+            Cell::new(c.queued)
+        };
         table.add_row([
             Cell::new(name),
             Cell::new(eps.len()),
@@ -870,7 +897,10 @@ async fn cmd_feed_info(db: &Db, slug: &str) -> Result<()> {
         .with_context(|| format!("feed {slug:?} not found — run `dura feed sync` first"))?;
 
     let all_eps = db
-        .list_episodes(EpisodeFilter { feed_id: Some(feed.id), ..Default::default() })
+        .list_episodes(EpisodeFilter {
+            feed_id: Some(feed.id),
+            ..Default::default()
+        })
         .await?;
 
     let c = EpisodeCounts::tally(&all_eps);
@@ -889,9 +919,21 @@ async fn cmd_feed_info(db: &Db, slug: &str) -> Result<()> {
     // Summary counts
     let mut summary = make_table();
     summary.set_header(["TOTAL", "DL", "QUEUED", "SKIP", "QUAR", "MISSING"]);
-    let miss_cell = if c.missing > 0 { Cell::new(c.missing).fg(Color::Red) } else { Cell::new(c.missing) };
-    let quar_cell = if c.quarantined > 0 { Cell::new(c.quarantined).fg(Color::Red) } else { Cell::new(c.quarantined) };
-    let queued_cell = if c.queued > 0 { Cell::new(c.queued).fg(Color::Yellow) } else { Cell::new(c.queued) };
+    let miss_cell = if c.missing > 0 {
+        Cell::new(c.missing).fg(Color::Red)
+    } else {
+        Cell::new(c.missing)
+    };
+    let quar_cell = if c.quarantined > 0 {
+        Cell::new(c.quarantined).fg(Color::Red)
+    } else {
+        Cell::new(c.quarantined)
+    };
+    let queued_cell = if c.queued > 0 {
+        Cell::new(c.queued).fg(Color::Yellow)
+    } else {
+        Cell::new(c.queued)
+    };
     summary.add_row([
         Cell::new(all_eps.len()),
         Cell::new(c.dl).fg(Color::Green),
@@ -956,13 +998,13 @@ fn cmd_rules_list(cfg: &config::Config) -> Result<()> {
             let action_str = r.action.to_string();
             let action_cell = match action_str.as_str() {
                 "download" => Cell::new(&action_str).fg(Color::Green),
-                "skip"     => Cell::new(&action_str).fg(Color::DarkGrey),
-                _          => Cell::new(&action_str),
+                "skip" => Cell::new(&action_str).fg(Color::DarkGrey),
+                _ => Cell::new(&action_str),
             };
             t.add_row([
                 Cell::new(r.priority),
                 Cell::new(&r.name),
-                Cell::new(&fmt_kind(&r.match_)),
+                Cell::new(fmt_kind(&r.match_)),
                 action_cell,
             ]);
         }
@@ -990,31 +1032,35 @@ fn cmd_rules_list(cfg: &config::Config) -> Result<()> {
     }
 
     println!();
-    println!("{} {}", "Default (no match):".dimmed(), cfg.defaults.action_on_no_match);
+    println!(
+        "{} {}",
+        "Default (no match):".dimmed(),
+        cfg.defaults.action_on_no_match
+    );
     Ok(())
 }
 
 // ---- check -----------------------------------------------------------------
 
 async fn cmd_check(db: &Db, fix: bool) -> Result<()> {
-    let all = db
-        .list_episodes(EpisodeFilter::default())
-        .await?;
+    let all = db.list_episodes(EpisodeFilter::default()).await?;
 
     let complete: Vec<_> = all
         .iter()
         .filter(|ep| matches!(&ep.state, EpisodeState::Complete { .. }))
         .collect();
 
-    println!("Checking {} complete episode(s) for missing files...", complete.len());
+    println!(
+        "Checking {} complete episode(s) for missing files...",
+        complete.len()
+    );
 
     let mut missing = Vec::new();
     for ep in &complete {
-        if let EpisodeState::Complete { path, .. } = &ep.state {
-            if !path.exists() {
+        if let EpisodeState::Complete { path, .. } = &ep.state
+            && !path.exists() {
                 missing.push((ep, path.clone()));
             }
-        }
     }
 
     if missing.is_empty() {
@@ -1045,7 +1091,10 @@ async fn cmd_check(db: &Db, fix: bool) -> Result<()> {
             missing.len()
         );
     } else {
-        println!("{}", "Run with --fix to re-queue them for download.".dimmed());
+        println!(
+            "{}",
+            "Run with --fix to re-queue them for download.".dimmed()
+        );
     }
     Ok(())
 }
@@ -1055,12 +1104,15 @@ async fn cmd_check(db: &Db, fix: bool) -> Result<()> {
 async fn warn_missing_files(db: &Db) {
     let all = match db.list_episodes(EpisodeFilter::default()).await {
         Ok(eps) => eps,
-        Err(e) => { tracing::warn!(error = %e, "could not load episodes for file check"); return; }
+        Err(e) => {
+            tracing::warn!(error = %e, "could not load episodes for file check");
+            return;
+        }
     };
     let mut missing = 0usize;
     for ep in &all {
-        if let EpisodeState::Complete { path, .. } = &ep.state {
-            if !path.exists() {
+        if let EpisodeState::Complete { path, .. } = &ep.state
+            && !path.exists() {
                 tracing::warn!(
                     episode_id = %ep.id,
                     path = %path.display(),
@@ -1068,7 +1120,6 @@ async fn warn_missing_files(db: &Db) {
                 );
                 missing += 1;
             }
-        }
     }
     if missing > 0 {
         tracing::warn!(
@@ -1080,17 +1131,15 @@ async fn warn_missing_files(db: &Db) {
 
 // ---- Recheck pending episodes against current rules -----------------------
 
-async fn recheck_episodes(
-    db: &Db,
-    engine: &RuleEngine,
-    slugs: &[String],
-) -> Result<()> {
+async fn recheck_episodes(db: &Db, engine: &RuleEngine, slugs: &[String]) -> Result<()> {
     let feeds: Vec<_> = if slugs.is_empty() {
         db.list_feeds().await?
     } else {
         let mut out = Vec::new();
         for slug in slugs {
-            if let Some(f) = db.get_feed_by_slug(slug).await? { out.push(f); }
+            if let Some(f) = db.get_feed_by_slug(slug).await? {
+                out.push(f);
+            }
         }
         out
     };
@@ -1100,7 +1149,12 @@ async fn recheck_episodes(
     table.set_header(["ID", "TITLE", "OLD", "NEW"]);
 
     for feed in &feeds {
-        let eps = db.list_episodes(EpisodeFilter { feed_id: Some(feed.id), ..Default::default() }).await?;
+        let eps = db
+            .list_episodes(EpisodeFilter {
+                feed_id: Some(feed.id),
+                ..Default::default()
+            })
+            .await?;
         for ep in &eps {
             // Only re-evaluate episodes that haven't been acted on yet.
             let old_action = match &ep.state {
@@ -1109,17 +1163,22 @@ async fn recheck_episodes(
                 _ => continue,
             };
             let new_action = engine.evaluate(ep, feed);
-            if old_action == Some(new_action) { continue; }
+            if old_action == Some(new_action) {
+                continue;
+            }
 
-            db.update_episode_state(&ep.id, &EpisodeState::Matched(new_action)).await?;
+            db.update_episode_state(&ep.id, &EpisodeState::Matched(new_action))
+                .await?;
             reassigned += 1;
 
-            let old_label = old_action.map(|a| a.to_string()).unwrap_or_else(|| "discovered".into());
+            let old_label = old_action
+                .map(|a| a.to_string())
+                .unwrap_or_else(|| "discovered".into());
             let new_label = new_action.to_string();
             let new_cell = match new_label.as_str() {
                 "download" => Cell::new(&new_label).fg(Color::Green),
-                "skip"     => Cell::new(&new_label).fg(Color::DarkGrey),
-                _          => Cell::new(&new_label),
+                "skip" => Cell::new(&new_label).fg(Color::DarkGrey),
+                _ => Cell::new(&new_label),
             };
             table.add_row([
                 Cell::new(ep.id.short()),
@@ -1131,7 +1190,10 @@ async fn recheck_episodes(
     }
 
     if reassigned == 0 {
-        println!("{}", "Recheck: all pending episodes already match current rules.".dimmed());
+        println!(
+            "{}",
+            "Recheck: all pending episodes already match current rules.".dimmed()
+        );
     } else {
         println!("{}", table);
         println!("{} episode(s) reassigned.", reassigned.to_string().yellow());
@@ -1149,8 +1211,8 @@ async fn cmd_episode_delete(db: &Db, id: &str, delete_file: bool) -> Result<()> 
         .await?
         .with_context(|| format!("episode {id:?} not found"))?;
 
-    if delete_file {
-        if let EpisodeState::Complete { path, .. } = &ep.state {
+    if delete_file
+        && let EpisodeState::Complete { path, .. } = &ep.state {
             if path.exists() {
                 tokio::fs::remove_file(path)
                     .await
@@ -1160,7 +1222,6 @@ async fn cmd_episode_delete(db: &Db, id: &str, delete_file: bool) -> Result<()> 
                 println!("  {}", "File already missing from disk.".dimmed());
             }
         }
-    }
 
     db.delete_episode(&ep.id).await?;
     println!("{} {} — {}", "Removed".red(), ep.id.short(), ep.title);
@@ -1174,17 +1235,15 @@ async fn cmd_episode_delete(db: &Db, id: &str, delete_file: bool) -> Result<()> 
 fn acquire_run_lock(db_path: &std::path::Path) -> Result<RunLockGuard> {
     let pid_path = db_path.with_file_name("dura.pid");
 
-    if let Ok(content) = std::fs::read_to_string(&pid_path) {
-        if let Ok(pid) = content.trim().parse::<u32>() {
-            if pid != std::process::id() && is_running(pid) {
+    if let Ok(content) = std::fs::read_to_string(&pid_path)
+        && let Ok(pid) = content.trim().parse::<u32>()
+            && pid != std::process::id() && is_running(pid) {
                 anyhow::bail!(
                     "`dura start` is already running (PID {pid}).\n  \
                      Stop it first, or remove {:?} if the file is stale.",
                     pid_path
                 );
             }
-        }
-    }
 
     if let Some(parent) = pid_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1245,9 +1304,15 @@ impl EpisodeCounts {
         for ep in episodes {
             match &ep.state {
                 EpisodeState::Complete { path, .. } => {
-                    if path.exists() { c.dl += 1; } else { c.missing += 1; }
+                    if path.exists() {
+                        c.dl += 1;
+                    } else {
+                        c.missing += 1;
+                    }
                 }
-                EpisodeState::Matched(Action::Download) | EpisodeState::Failed { .. } => c.queued += 1,
+                EpisodeState::Matched(Action::Download) | EpisodeState::Failed { .. } => {
+                    c.queued += 1
+                }
                 EpisodeState::Matched(Action::Skip) => c.skipped += 1,
                 EpisodeState::Quarantined { .. } => c.quarantined += 1,
                 _ => {}
@@ -1266,12 +1331,12 @@ fn make_table() -> Table {
 
 fn state_cell(label: &str) -> Cell {
     match label {
-        "complete"    => Cell::new(label).fg(Color::Green),
+        "complete" => Cell::new(label).fg(Color::Green),
         "quarantined" => Cell::new(label).fg(Color::Red),
-        "failed"      => Cell::new(label).fg(Color::Red),
-        "matched"     => Cell::new(label).fg(Color::Yellow),
+        "failed" => Cell::new(label).fg(Color::Red),
+        "matched" => Cell::new(label).fg(Color::Yellow),
         "downloading" => Cell::new(label).fg(Color::Cyan),
-        _             => Cell::new(label),
+        _ => Cell::new(label),
     }
 }
 

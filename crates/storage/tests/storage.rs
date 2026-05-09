@@ -66,8 +66,12 @@ async fn upsert_feed_is_idempotent() {
 #[tokio::test]
 async fn list_feeds_returns_all() {
     let db = open_mem_db().await;
-    db.upsert_feed(&make_feed("https://a.com/rss", "feed-a")).await.unwrap();
-    db.upsert_feed(&make_feed("https://b.com/rss", "feed-b")).await.unwrap();
+    db.upsert_feed(&make_feed("https://a.com/rss", "feed-a"))
+        .await
+        .unwrap();
+    db.upsert_feed(&make_feed("https://b.com/rss", "feed-b"))
+        .await
+        .unwrap();
     let feeds = db.list_feeds().await.unwrap();
     assert_eq!(feeds.len(), 2);
 }
@@ -75,7 +79,9 @@ async fn list_feeds_returns_all() {
 #[tokio::test]
 async fn get_feed_by_slug() {
     let db = open_mem_db().await;
-    db.upsert_feed(&make_feed("https://example.com/rss", "slug-test")).await.unwrap();
+    db.upsert_feed(&make_feed("https://example.com/rss", "slug-test"))
+        .await
+        .unwrap();
     let f = db.get_feed_by_slug("slug-test").await.unwrap();
     assert!(f.is_some());
     assert!(db.get_feed_by_slug("nonexistent").await.unwrap().is_none());
@@ -93,7 +99,11 @@ async fn upsert_and_get_episode() {
     ep.feed_id = feed_id;
     db.upsert_episode(&ep).await.unwrap();
 
-    let fetched = db.get_episode(&ep.id).await.unwrap().expect("episode should exist");
+    let fetched = db
+        .get_episode(&ep.id)
+        .await
+        .unwrap()
+        .expect("episode should exist");
     assert_eq!(fetched.title, ep.title);
     assert_eq!(fetched.duration_secs, Some(3600));
     assert!(matches!(fetched.state, EpisodeState::Discovered));
@@ -133,14 +143,23 @@ async fn upsert_episode_preserves_state() {
 #[tokio::test]
 async fn episode_state_json_round_trips() {
     let db = open_mem_db().await;
-    let feed_id = db.upsert_feed(&make_feed("https://example.com/rss", "rt")).await.unwrap();
+    let feed_id = db
+        .upsert_feed(&make_feed("https://example.com/rss", "rt"))
+        .await
+        .unwrap();
     let ep = make_episode(feed_id, "rt-ep");
     db.upsert_episode(&ep).await.unwrap();
 
     let states: Vec<EpisodeState> = vec![
         EpisodeState::Matched(Action::Download),
-        EpisodeState::Downloading { attempt: 1, started_at: Utc::now() },
-        EpisodeState::Failed { last_error: "timeout".into(), attempts: 2 },
+        EpisodeState::Downloading {
+            attempt: 1,
+            started_at: Utc::now(),
+        },
+        EpisodeState::Failed {
+            last_error: "timeout".into(),
+            attempts: 2,
+        },
         EpisodeState::Quarantined {
             reason: "http_404".into(),
             last_error: "404 Not Found".into(),
@@ -164,7 +183,10 @@ async fn episode_state_json_round_trips() {
 #[tokio::test]
 async fn download_queue_returns_matched_episodes() {
     let db = open_mem_db().await;
-    let feed_id = db.upsert_feed(&make_feed("https://example.com/rss", "queue")).await.unwrap();
+    let feed_id = db
+        .upsert_feed(&make_feed("https://example.com/rss", "queue"))
+        .await
+        .unwrap();
 
     let ep1 = make_episode(feed_id, "q1");
     let ep2 = make_episode(feed_id, "q2");
@@ -192,15 +214,20 @@ async fn download_queue_returns_matched_episodes() {
 #[tokio::test]
 async fn download_queue_includes_retryable_failed() {
     let db = open_mem_db().await;
-    let feed_id =
-        db.upsert_feed(&make_feed("https://example.com/rss", "retry")).await.unwrap();
+    let feed_id = db
+        .upsert_feed(&make_feed("https://example.com/rss", "retry"))
+        .await
+        .unwrap();
     let ep = make_episode(feed_id, "retry-ep");
     db.upsert_episode(&ep).await.unwrap();
 
     // 1 attempt failed — max_retries = 3 → still retryable
     db.update_episode_state(
         &ep.id,
-        &EpisodeState::Failed { last_error: "timeout".into(), attempts: 1 },
+        &EpisodeState::Failed {
+            last_error: "timeout".into(),
+            attempts: 1,
+        },
     )
     .await
     .unwrap();
@@ -211,7 +238,10 @@ async fn download_queue_includes_retryable_failed() {
     // Bump to 3 attempts — max_retries = 3 → no longer retryable
     db.update_episode_state(
         &ep.id,
-        &EpisodeState::Failed { last_error: "timeout".into(), attempts: 3 },
+        &EpisodeState::Failed {
+            last_error: "timeout".into(),
+            attempts: 3,
+        },
     )
     .await
     .unwrap();
@@ -224,8 +254,10 @@ async fn download_queue_includes_retryable_failed() {
 #[tokio::test]
 async fn list_episodes_with_state_filter() {
     let db = open_mem_db().await;
-    let feed_id =
-        db.upsert_feed(&make_feed("https://example.com/rss", "filter")).await.unwrap();
+    let feed_id = db
+        .upsert_feed(&make_feed("https://example.com/rss", "filter"))
+        .await
+        .unwrap();
 
     for guid in ["f1", "f2", "f3"] {
         let ep = make_episode(feed_id, guid);

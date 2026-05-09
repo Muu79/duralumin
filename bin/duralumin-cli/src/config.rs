@@ -3,7 +3,7 @@ use std::time::Duration;
 
 const DEFAULT_CONFIG: &str = include_str!("default_config.toml");
 
-use serde::{de, Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de};
 
 use duralumin_core::Action;
 use duralumin_rules::config::{FeedConfig, RuleConfig, validate_rules};
@@ -17,17 +17,36 @@ fn de_duration<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
 
 // ---- Defaults --------------------------------------------------------------
 
-fn default_concurrent_downloads() -> u32 { 2 }
-fn default_attempt_timeout() -> Duration { Duration::from_secs(20 * 60) }
-fn default_max_retries() -> u8 { 3 }
-fn default_backoff_base() -> Duration { Duration::from_secs(30) }
-fn default_user_agent() -> String {
-    format!("duralumin/{} (+https://github.com/Muu79/duralumin)", env!("CARGO_PKG_VERSION"))
+fn default_concurrent_downloads() -> u32 {
+    2
 }
-fn default_accept_invalid_certs() -> bool { false }
-fn default_log_level() -> String { "info".into() }
-fn default_log_format() -> String { "pretty".into() }
-fn default_action_on_no_match() -> Action { Action::Skip }
+fn default_attempt_timeout() -> Duration {
+    Duration::from_secs(20 * 60)
+}
+fn default_max_retries() -> u8 {
+    3
+}
+fn default_backoff_base() -> Duration {
+    Duration::from_secs(30)
+}
+fn default_user_agent() -> String {
+    format!(
+        "duralumin/{} (+https://github.com/Muu79/duralumin)",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+fn default_accept_invalid_certs() -> bool {
+    false
+}
+fn default_log_level() -> String {
+    "info".into()
+}
+fn default_log_format() -> String {
+    "pretty".into()
+}
+fn default_action_on_no_match() -> Action {
+    Action::Skip
+}
 
 // ---- Error type ------------------------------------------------------------
 
@@ -76,10 +95,14 @@ pub struct StorageConfig {
 
 impl StorageConfig {
     pub fn library(&self) -> PathBuf {
-        self.library_path.clone().unwrap_or_else(|| self.dir.join("podcasts"))
+        self.library_path
+            .clone()
+            .unwrap_or_else(|| self.dir.join("podcasts"))
     }
     pub fn db(&self) -> PathBuf {
-        self.state_db.clone().unwrap_or_else(|| self.dir.join("db").join("duralumin.db"))
+        self.state_db
+            .clone()
+            .unwrap_or_else(|| self.dir.join("db").join("duralumin.db"))
     }
 }
 
@@ -120,7 +143,9 @@ pub struct DefaultsConfig {
 
 impl Default for DefaultsConfig {
     fn default() -> Self {
-        Self { action_on_no_match: default_action_on_no_match() }
+        Self {
+            action_on_no_match: default_action_on_no_match(),
+        }
     }
 }
 
@@ -136,7 +161,10 @@ pub struct LoggingConfig {
 
 impl Default for LoggingConfig {
     fn default() -> Self {
-        Self { level: default_log_level(), format: default_log_format() }
+        Self {
+            level: default_log_level(),
+            format: default_log_format(),
+        }
     }
 }
 
@@ -153,8 +181,7 @@ pub fn load(override_path: Option<&Path>) -> Result<(Config, PathBuf), ConfigErr
         }
         Err(e) => return Err(e),
     };
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| ConfigError::Io(path.clone(), e))?;
+    let text = std::fs::read_to_string(&path).map_err(|e| ConfigError::Io(path.clone(), e))?;
     let cfg: Config = toml::from_str(&text)?;
     validate(&cfg)?;
     Ok((cfg, path))
@@ -183,7 +210,11 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         errors.push(format!("[global] {msg}"));
     }
 
-    if errors.is_empty() { Ok(()) } else { Err(ConfigError::Validation(errors)) }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(ConfigError::Validation(errors))
+    }
 }
 
 /// Determine where to write a new default config on first run.
@@ -201,7 +232,11 @@ fn bootstrap_path() -> PathBuf {
     let base: Option<PathBuf> = std::env::var("XDG_CONFIG_HOME")
         .ok()
         .map(PathBuf::from)
-        .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config")));
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".config"))
+        });
 
     if let Some(dir) = base {
         return dir.join("duralumin").join("config.toml");
@@ -212,11 +247,9 @@ fn bootstrap_path() -> PathBuf {
 
 fn write_default_config(dest: &Path) -> Result<(), ConfigError> {
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| ConfigError::Io(parent.to_path_buf(), e))?;
+        std::fs::create_dir_all(parent).map_err(|e| ConfigError::Io(parent.to_path_buf(), e))?;
     }
-    std::fs::write(dest, DEFAULT_CONFIG)
-        .map_err(|e| ConfigError::Io(dest.to_path_buf(), e))
+    std::fs::write(dest, DEFAULT_CONFIG).map_err(|e| ConfigError::Io(dest.to_path_buf(), e))
 }
 
 /// Resolve config file path in the order specified by spec §7.
@@ -239,7 +272,6 @@ fn resolve_path(override_path: Option<&Path>) -> Result<PathBuf, ConfigError> {
             #[cfg(not(target_os = "windows"))]
             std::env::var("HOME")
                 .map(|h| PathBuf::from(h).join(".config"))
-                .map_err(|e| e)
         })
         .unwrap_or_else(|_| PathBuf::from(".config"));
 
