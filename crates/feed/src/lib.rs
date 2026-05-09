@@ -246,9 +246,10 @@ fn extract_enclosure(entry: &feed_rs::model::Entry) -> Option<(Url, Option<u64>,
     }
     for link in &entry.links {
         if link.rel.as_deref() == Some("enclosure")
-            && let Ok(url) = Url::parse(&link.href) {
-                return Some((url, None, link.media_type.clone()));
-            }
+            && let Ok(url) = Url::parse(&link.href)
+        {
+            return Some((url, None, link.media_type.clone()));
+        }
     }
     None
 }

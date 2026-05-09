@@ -282,18 +282,19 @@ impl Downloader {
 
         // Size verification ±1% (spec §5.6)
         if let Some(expected) = episode.enclosure_size
-            && expected > 0 {
-                let tolerance = (expected as f64 * 0.01).ceil() as u64;
-                let lo = expected.saturating_sub(tolerance);
-                let hi = expected + tolerance;
-                if bytes_written < lo || bytes_written > hi {
-                    tokio::fs::remove_file(&part_path).await.ok();
-                    return Err(DownloadError::SizeMismatch {
-                        expected,
-                        actual: bytes_written,
-                    });
-                }
+            && expected > 0
+        {
+            let tolerance = (expected as f64 * 0.01).ceil() as u64;
+            let lo = expected.saturating_sub(tolerance);
+            let hi = expected + tolerance;
+            if bytes_written < lo || bytes_written > hi {
+                tokio::fs::remove_file(&part_path).await.ok();
+                return Err(DownloadError::SizeMismatch {
+                    expected,
+                    actual: bytes_written,
+                });
             }
+        }
 
         // Atomic rename .part → final
         tokio::fs::rename(&part_path, &final_path).await?;

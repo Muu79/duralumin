@@ -1058,9 +1058,10 @@ async fn cmd_check(db: &Db, fix: bool) -> Result<()> {
     let mut missing = Vec::new();
     for ep in &complete {
         if let EpisodeState::Complete { path, .. } = &ep.state
-            && !path.exists() {
-                missing.push((ep, path.clone()));
-            }
+            && !path.exists()
+        {
+            missing.push((ep, path.clone()));
+        }
     }
 
     if missing.is_empty() {
@@ -1112,14 +1113,15 @@ async fn warn_missing_files(db: &Db) {
     let mut missing = 0usize;
     for ep in &all {
         if let EpisodeState::Complete { path, .. } = &ep.state
-            && !path.exists() {
-                tracing::warn!(
-                    episode_id = %ep.id,
-                    path = %path.display(),
-                    "file missing for Complete episode"
-                );
-                missing += 1;
-            }
+            && !path.exists()
+        {
+            tracing::warn!(
+                episode_id = %ep.id,
+                path = %path.display(),
+                "file missing for Complete episode"
+            );
+            missing += 1;
+        }
     }
     if missing > 0 {
         tracing::warn!(
@@ -1211,17 +1213,16 @@ async fn cmd_episode_delete(db: &Db, id: &str, delete_file: bool) -> Result<()> 
         .await?
         .with_context(|| format!("episode {id:?} not found"))?;
 
-    if delete_file
-        && let EpisodeState::Complete { path, .. } = &ep.state {
-            if path.exists() {
-                tokio::fs::remove_file(path)
-                    .await
-                    .with_context(|| format!("failed to delete {:?}", path))?;
-                println!("  {} {}", "Deleted file:".dimmed(), path.display());
-            } else {
-                println!("  {}", "File already missing from disk.".dimmed());
-            }
+    if delete_file && let EpisodeState::Complete { path, .. } = &ep.state {
+        if path.exists() {
+            tokio::fs::remove_file(path)
+                .await
+                .with_context(|| format!("failed to delete {:?}", path))?;
+            println!("  {} {}", "Deleted file:".dimmed(), path.display());
+        } else {
+            println!("  {}", "File already missing from disk.".dimmed());
         }
+    }
 
     db.delete_episode(&ep.id).await?;
     println!("{} {} — {}", "Removed".red(), ep.id.short(), ep.title);
@@ -1237,13 +1238,15 @@ fn acquire_run_lock(db_path: &std::path::Path) -> Result<RunLockGuard> {
 
     if let Ok(content) = std::fs::read_to_string(&pid_path)
         && let Ok(pid) = content.trim().parse::<u32>()
-            && pid != std::process::id() && is_running(pid) {
-                anyhow::bail!(
-                    "`dura start` is already running (PID {pid}).\n  \
+        && pid != std::process::id()
+        && is_running(pid)
+    {
+        anyhow::bail!(
+            "`dura start` is already running (PID {pid}).\n  \
                      Stop it first, or remove {:?} if the file is stale.",
-                    pid_path
-                );
-            }
+            pid_path
+        );
+    }
 
     if let Some(parent) = pid_path.parent() {
         std::fs::create_dir_all(parent)?;

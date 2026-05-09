@@ -67,17 +67,18 @@ pub async fn audio_handler(
 
     // Serve local file if downloaded
     if let EpisodeState::Complete { path, .. } = &episode.state
-        && path.exists() {
-            tracing::debug!(slug, episode_id = episode_id_str, path = %path.display(), "serving local file");
-            let svc = ServeFile::new(path);
-            return match svc.oneshot(request).await {
-                Ok(resp) => resp.map(Body::new),
-                Err(e) => {
-                    tracing::warn!(error = %e, "local file serve error, falling back to proxy");
-                    proxy(&state, &headers, episode.enclosure_url.as_str()).await
-                }
-            };
-        }
+        && path.exists()
+    {
+        tracing::debug!(slug, episode_id = episode_id_str, path = %path.display(), "serving local file");
+        let svc = ServeFile::new(path);
+        return match svc.oneshot(request).await {
+            Ok(resp) => resp.map(Body::new),
+            Err(e) => {
+                tracing::warn!(error = %e, "local file serve error, falling back to proxy");
+                proxy(&state, &headers, episode.enclosure_url.as_str()).await
+            }
+        };
+    }
 
     // Fall back to proxying the origin URL
     tracing::debug!(slug, episode_id = episode_id_str, url = %episode.enclosure_url, "proxying to origin");

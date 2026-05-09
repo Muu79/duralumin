@@ -270,8 +270,7 @@ fn resolve_path(override_path: Option<&Path>) -> Result<PathBuf, ConfigError> {
             #[cfg(target_os = "windows")]
             return std::env::var("APPDATA").map(PathBuf::from);
             #[cfg(not(target_os = "windows"))]
-            std::env::var("HOME")
-                .map(|h| PathBuf::from(h).join(".config"))
+            std::env::var("HOME").map(|h| PathBuf::from(h).join(".config"))
         })
         .unwrap_or_else(|_| PathBuf::from(".config"));
 
