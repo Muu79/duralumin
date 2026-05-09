@@ -1,31 +1,31 @@
 [Unit]
 Description=Duralumin podcast download daemon
-Documentation=https://github.com/Muu79/duralumin
+Documentation=https://github.com/Muu79/dura
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=duralumin
-Group=duralumin
+User=dura
+Group=dura
 
 # Point at whichever config file you use
-Environment=DURALUMIN_CONFIG=/etc/duralumin/config.toml
+Environment=DURALUMIN_CONFIG=/etc/dura/config.toml
 
-ExecStart=/usr/local/bin/duralumin run
+ExecStart=/usr/local/bin/dura run
 Restart=on-failure
 RestartSec=30s
 
 # Keep logs going to journald
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=duralumin
+SyslogIdentifier=dura
 
 # Basic hardening
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/duralumin /etc/duralumin
+ReadWritePaths=/var/lib/dura /etc/dura
 
 [Install]
 WantedBy=multi-user.target
