@@ -38,3 +38,6 @@ install-updater = false
 # aws-lc-sys's __SSE2__ preprocessor requirement.
 [dist.github-custom-runners]
 i686-pc-windows-msvc = "windows-2022"
+
+[dist.dependencies.chocolatey]
+nasm = { version = "*", stage = "build" }
