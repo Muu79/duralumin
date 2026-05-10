@@ -224,7 +224,7 @@ fn build_rule(cfg: &RuleConfig) -> Result<Box<dyn Rule>, RuleError> {
 // ---- RuleEngine ------------------------------------------------------------
 
 pub struct RuleEngine {
-    /// Per-feed rules, sorted ascending by config priority (lower = first).
+    /// Per-feed rules, sorted ascending by priority (lower = evaluated first).
     per_feed: HashMap<FeedId, Vec<Box<dyn Rule>>>,
     /// Global catch-all rules, applied after per-feed rules.
     global: Vec<Box<dyn Rule>>,

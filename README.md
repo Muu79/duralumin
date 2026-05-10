@@ -35,7 +35,7 @@ place `dura` somewhere on your `$PATH`.
 cargo install --git https://github.com/muu79/duralumin
 ```
 
-Requires a stable Rust toolchain (1.80+). The build links against `aws-lc-rs`
+Requires a stable Rust toolchain (1.80+). The build links against `ring`
 (bundled) and SQLite (bundled) so no system libraries are needed.
 
 ## Quick start
@@ -85,9 +85,11 @@ kind = "always"
 ### Rule engine
 
 Every new episode is passed through the rule engine when a feed is synced. Rules
-are evaluated in **priority order** (higher number wins). The first rule that
-matches determines the action (`download`, `skip`, or `quarantine`). If no rule
-matches, `[defaults] action_on_no_match` applies (default: `skip`).
+are evaluated in **ascending priority order** — lower numbers run first, and the
+first rule that matches determines the action (`download`, `skip`, or `quarantine`).
+Priority `0` has the highest precedence; use a high number (e.g. `100`) for a
+catch-all that only fires when nothing more specific matched.
+If no rule matches, `[defaults] action_on_no_match` applies (default: `skip`).
 
 **Rule scope priority** (highest to lowest):
 
@@ -101,7 +103,7 @@ matches, `[defaults] action_on_no_match` applies (default: `skip`).
 | Kind | Field | Example |
 |------|-------|---------|
 | `always` | — | match every episode |
-| `title_regex` | `pattern` | `"^\\d+:"` |
+| `title_regex` | `pattern` | `'^\d+:'` (use single-quoted TOML strings) |
 | `description_regex` | `pattern` | `"(?i)interview"` |
 | `duration_min` / `duration_max` | `value` | `"30m"`, `"2h"` |
 | `episode_size_max` | `value` | `"500 MB"` |
@@ -112,9 +114,19 @@ matches, `[defaults] action_on_no_match` applies (default: `skip`).
 [defaults]
 action_on_no_match = "skip"   # don't download unless a rule says so
 
+# Priority 0 fires first: skip anything with "bonus" in the title.
 [[feeds.rules]]
-name     = "only-long-episodes"
+name     = "skip-bonus"
 priority = 0
+action   = "skip"
+[feeds.rules.match]
+kind    = "title_regex"
+pattern = '(?i)bonus'
+
+# Priority 10 fires next (only reached if the episode wasn't already skipped).
+[[feeds.rules]]
+name     = "long-episodes"
+priority = 10
 action   = "download"
 [feeds.rules.match]
 kind  = "duration_min"
@@ -315,7 +327,7 @@ complete -c dura -n '__fish_seen_subcommand_from episode; and __fish_seen_subcom
 | `[[feeds]]` | `poll_interval` | `"1h"` | How often `dura start` re-checks this feed |
 | `[[feeds]]` | `enabled` | `true` | Set `false` to pause without removing |
 | `[[feeds]]` | `restream` | `false` | Expose via the restream server |
-| `[[feeds]]` | `default_action` | — | Catch-all action before global rules |
+| `[[feeds]]` | `default_action` | — | Feed-level fallback after per-feed and global rules |
 
 See [`examples/config.toml`](examples/config.toml) for annotated examples of
 every option.
