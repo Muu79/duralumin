@@ -32,3 +32,7 @@ install-path = "CARGO_HOME"
 # The updater only supports tier-1 targets; disabled to avoid build failures
 # on armv7, i686, and musl targets.
 install-updater = false
+
+# NASM is required by aws-lc-sys when cross-compiling for 32-bit Windows from Linux.
+[dist.system-dependencies.apt]
+nasm = { version = "*", targets = ["i686-pc-windows-msvc"] }
