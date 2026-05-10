@@ -318,7 +318,25 @@ async fn main() {
 
     info!(path = %config_path.display(), "loaded config");
 
-    let db = match Db::open(&cfg.storage.db()).await {
+    let db_path = cfg.storage.db();
+    // Create the database directory if it doesn't exist. We use create_dir_all
+    // because the default path ({storage.dir}/db/) is two levels deep. If the
+    // user has a typo in storage.dir the created path will be wrong — it will
+    // be obvious immediately from the info log below.
+    if let Some(db_dir) = db_path.parent() {
+        if !db_dir.exists() {
+            if let Err(e) = std::fs::create_dir_all(db_dir) {
+                eprintln!(
+                    "Error: failed to create database directory {}: {e}",
+                    db_dir.display()
+                );
+                std::process::exit(1);
+            }
+            info!(path = %db_dir.display(), "created database directory");
+        }
+    }
+
+    let db = match Db::open(&db_path).await {
         Ok(d) => d,
         Err(e) => {
             tracing::error!(error = %e, "failed to open database");
