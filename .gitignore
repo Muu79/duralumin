@@ -1,2 +1,6 @@
 /target
-.ai
+.*
+!.vscode
+!.github
+!.gitignore
+!.cargo

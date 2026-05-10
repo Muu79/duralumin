@@ -13,7 +13,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [workspace.dependencies]
@@ -30,7 +30,7 @@ duralumin-server     = { path = "crates/server" }
 tokio = { version = "1", features = ["full"] }
 
 # HTTP
-reqwest = { version = "0.13", default-features = false, features = ["stream", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["stream", "rustls-no-provider"] }
 
 # RSS parsing
 feed-rs = "2"
@@ -62,7 +62,7 @@ hex       = "0.4"
 url       = { version = "2", features = ["serde"] }
 bytesize  = { version = "2", features = ["serde"] }
 humantime = "2"
-rustls    = { version = "0.23", features = ["aws-lc-rs"], default-features = false }
+rustls    = { version = "0.23", features = ["ring"], default-features = false }
 anyhow    = "1"
 thiserror = "2"
 
