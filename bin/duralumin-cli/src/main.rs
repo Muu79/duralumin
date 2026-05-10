@@ -19,7 +19,7 @@ use duralumin_feed::FeedFetcher;
 use duralumin_metadata::write_tags;
 use duralumin_rules::{RuleEngine, config::FeedConfig};
 use duralumin_storage::{Db, EpisodeFilter};
-use rustls::crypto::aws_lc_rs;
+use rustls::crypto::ring;
 
 // ---- Config conversions ----------------------------------------------------
 
@@ -232,7 +232,7 @@ enum DbSub {
 async fn main() {
     // rustls 0.23 requires an explicit crypto provider; install aws-lc-rs before
     // any TLS connection is attempted (reqwest 0.13 does not do this automatically).
-    aws_lc_rs::default_provider().install_default().ok();
+    ring::default_provider().install_default().ok();
 
     let cli = Cli::parse();
 
