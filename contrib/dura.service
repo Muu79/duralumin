@@ -12,7 +12,7 @@ Group=dura
 # Point at whichever config file you use
 Environment=DURALUMIN_CONFIG=/etc/dura/config.toml
 
-ExecStart=/usr/local/bin/dura start
+ExecStart=/usr/bin/dura start
 # Reload triggers a restart so the new config is picked up on next start.
 # (Hot-reload without restart is not supported in v0.1.)
 ExecReload=/bin/kill -TERM $MAINPID
