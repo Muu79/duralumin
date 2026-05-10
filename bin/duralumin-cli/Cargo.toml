@@ -6,10 +6,9 @@ description = "Podcast download daemon — sync, archive, and restream your feed
 license = "MIT"
 repository = "https://github.com/muu79/duralumin"
 authors = ["muu <email@muaazbhyat.co.za>"]
-readme = "README.md"
+readme = "../../README.md"
 keywords = ["podcast", "rss", "downloader", "restream", "daemon", "sync", "archive"]
 categories = ["command-line-utilities", "network-programming", "asynchronous", "audio", "serverless"]
-license-file = "../../LICENSE"
 
 [[bin]]
 name = "dura"
