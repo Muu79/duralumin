@@ -77,6 +77,10 @@ level = "info"
 
 
 # --- Rules --------------------------------------------------------------------
+# IMPORTANT: use dotted keys (match.kind = ...) for the match sub-table, NOT
+# [feeds.rules.match] or [global_rules.match] headers. TOML forbids redefining
+# the same sub-table path across multiple array elements, so the header form
+# breaks as soon as a feed or global_rules section has more than one rule.
 
 # --- Global rules -------------------------------------------------------------
 # Applied after per-feed rules. Useful for cross-feed policies.
@@ -94,10 +98,9 @@ name     = "skip-trailers"
 # 2. Global rules (defined in the [[global_rules]] section)
 # 3. Feed's default_action (optional per-feed fallback)
 # 4. [defaults] action_on_no_match
-priority = 0
+priority      = 0
 # Available actions: "download", "skip", "quarantine"
-action   = "skip"
-[global_rules.match]
+action        = "skip"
 # Available match kinds:
 #   title_regex / description_regex — regex pattern (uses `pattern` field)
 #   duration_min / duration_max     — episode length (uses `value`, e.g. "30m", "2h")
@@ -108,17 +111,16 @@ action   = "skip"
 # Regex patterns follow Rust's `regex` crate syntax. Use single-quoted TOML
 # strings to avoid double-escaping: pattern = '^\d+:' (not "^\\d+:")
 # Inline flags are supported: (?i) case-insensitive, (?m) multi-line, etc.
-kind  = "duration_max"
-value = "5m"
+match.kind    = "duration_max"
+match.value   = "5m"
 
 # Example: skip anything over 500 MB (probably a video feed misclassified as audio)
 [[global_rules]]
-name     = "skip-huge-files"
-priority = 10
-action   = "skip"
-[global_rules.match]
-kind  = "episode_size_max"
-value = "500 MB"
+name          = "skip-huge-files"
+priority      = 10
+action        = "skip"
+match.kind    = "episode_size_max"
+match.value   = "500 MB"
 
 
 # --- Feeds --------------------------------------------------------------------
@@ -139,11 +141,10 @@ poll_interval = "1h"
 restream      = true   # expose via <base_url>/rss/my-favourite-podcast
 
 [[feeds.rules]]
-name   = "download-all"
-priority = 0
-action = "download"
-[feeds.rules.match]
-kind = "always"
+name          = "download-all"
+priority      = 0
+action        = "download"
+match.kind    = "always"
 
 
 # --- Feed: only recent episodes ------------------------------------------------
@@ -156,12 +157,11 @@ poll_interval = "30m"
 # Only download episodes published after a specific date.
 # Useful to avoid backfilling hundreds of old episodes on first run.
 [[feeds.rules]]
-name     = "only-recent"
-priority = 0
-action   = "download"
-[feeds.rules.match]
-kind = "published_after"
-date = "2024-01-01T00:00:00Z"
+name          = "only-recent"
+priority      = 0
+action        = "download"
+match.kind    = "published_after"
+match.date    = "2024-01-01T00:00:00Z"
 
 
 # --- Feed: filter by title -----------------------------------------------------
@@ -174,22 +174,20 @@ poll_interval = "1h"
 # Priority 0: quarantine bonus/promo episodes first so they can't slip through
 # as a numbered episode below.
 [[feeds.rules]]
-name     = "quarantine-bonus"
-priority = 0
-action   = "quarantine"
-[feeds.rules.match]
-kind    = "title_regex"
-pattern = '(?i)bonus|trailer|promo'
+name          = "quarantine-bonus"
+priority      = 0
+action        = "quarantine"
+match.kind    = "title_regex"
+match.pattern = '(?i)bonus|trailer|promo'
 
 # Priority 5: only reached if the episode wasn't quarantined above.
 # Download episodes whose title starts with a series number.
 [[feeds.rules]]
-name     = "numbered-episodes"
-priority = 5
-action   = "download"
-[feeds.rules.match]
-kind    = "title_regex"
-pattern = '^\d+[:\.]'   # matches "42: Deep Dive" or "42. Deep Dive"
+name          = "numbered-episodes"
+priority      = 5
+action        = "download"
+match.kind    = "title_regex"
+match.pattern = '^\d+[:\.]'   # matches "42: Deep Dive" or "42. Deep Dive"
 
 
 # --- Feed: disabled -----------------------------------------------------------

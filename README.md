@@ -75,11 +75,10 @@ slug          = "my-show"
 poll_interval = "1h"
 
 [[feeds.rules]]
-name   = "download-all"
-priority = 0
-action = "download"
-[feeds.rules.match]
-kind = "always"
+name       = "download-all"
+priority   = 0
+action     = "download"
+match.kind = "always"
 ```
 
 ### Rule engine
@@ -97,6 +96,11 @@ If no rule matches, `[defaults] action_on_no_match` applies (default: `skip`).
 2. Global rules (`[[global_rules]]`)
 3. The feed's `default_action` (optional catch-all)
 4. `[defaults] action_on_no_match`
+
+> **TOML note:** Always use dotted keys for the `match` sub-table (`match.kind = ...`),
+> not a `[feeds.rules.match]` header. TOML forbids redefining the same sub-table
+> path across multiple array elements, so the header form breaks the moment a feed
+> has more than one rule.
 
 **Available match kinds:**
 
@@ -116,21 +120,19 @@ action_on_no_match = "skip"   # don't download unless a rule says so
 
 # Priority 0 fires first: skip anything with "bonus" in the title.
 [[feeds.rules]]
-name     = "skip-bonus"
-priority = 0
-action   = "skip"
-[feeds.rules.match]
-kind    = "title_regex"
-pattern = '(?i)bonus'
+name          = "skip-bonus"
+priority      = 0
+action        = "skip"
+match.kind    = "title_regex"
+match.pattern = '(?i)bonus'
 
 # Priority 10 fires next (only reached if the episode wasn't already skipped).
 [[feeds.rules]]
-name     = "long-episodes"
-priority = 10
-action   = "download"
-[feeds.rules.match]
-kind  = "duration_min"
-value = "20m"
+name       = "long-episodes"
+priority   = 10
+action     = "download"
+match.kind = "duration_min"
+match.value = "20m"
 ```
 
 **Example — opt-out model:**
@@ -139,12 +141,11 @@ value = "20m"
 action_on_no_match = "download"   # download everything by default
 
 [[global_rules]]
-name     = "skip-trailers"
-priority = 0
-action   = "skip"
-[global_rules.match]
-kind  = "duration_max"
-value = "5m"
+name        = "skip-trailers"
+priority    = 0
+action      = "skip"
+match.kind  = "duration_max"
+match.value = "5m"
 ```
 
 ## Commands
