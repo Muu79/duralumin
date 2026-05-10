@@ -40,4 +40,4 @@ install-updater = false
 i686-pc-windows-msvc = "windows-2022"
 
 [dist.dependencies.chocolatey]
-nasm = { version = "*", targets = ["i686-pc-windows-msvc"] }
+nasm = { targets = ["i686-pc-windows-msvc"] }
