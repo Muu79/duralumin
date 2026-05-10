@@ -139,6 +139,9 @@ jobs:
       - name: Install dependencies
         run: |
           ${{ matrix.packages_install }}
+      - name: Install NASM (required by aws-lc-sys for i686-pc-windows-msvc cross-compilation)
+        if: ${{ contains(matrix.targets, 'i686-pc-windows-msvc') }}
+        run: sudo apt-get install -y nasm
       - name: Build artifacts
         run: |
           # Actually do builds and make zips and whatnot

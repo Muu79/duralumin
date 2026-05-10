@@ -8,10 +8,27 @@ ci = "github"
 # The installers to generate for each app
 installers = ["shell", "powershell", "msi"]
 # Target platforms to build apps for (Rust target-triple syntax)
-targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "aarch64-unknown-linux-musl", "aarch64-pc-windows-msvc", "armv7-unknown-linux-gnueabihf", "armv7-unknown-linux-musleabihf", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "x86_64-pc-windows-msvc", "i686-unknown-linux-gnu", "i686-pc-windows-msvc"]
+targets = [
+  # macOS
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  # Windows — NASM is injected into the i686 build step via a conditional step in release.yml
+  "x86_64-pc-windows-msvc",
+  "i686-pc-windows-msvc",
+  # Linux glibc (requires glibc ≥ 2.35 on the host)
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "armv7-unknown-linux-gnueabihf",
+  "i686-unknown-linux-gnu",
+  # Linux musl — fully static, no glibc needed; best for NAS, containers, old distros
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+  "armv7-unknown-linux-musleabihf",
+]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.31.0"
 # Path that installers should place binaries in
 install-path = "CARGO_HOME"
-# Whether to install an updater program
-install-updater = true
+# The updater only supports tier-1 targets; disabled to avoid build failures
+# on armv7, i686, and musl targets.
+install-updater = false
