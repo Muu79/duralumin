@@ -1,0 +1,6 @@
+[env]
+# aws-lc-sys's internal.h gates x86 assembly on __SSE2__, but clang-cl
+# (via cargo-xwin) doesn't define it even when -arch:SSE2 is passed.
+# Defining it explicitly here unlocks the asm path without cmake or NO_ASM.
+# The env var name is target-scoped so it only affects i686-windows builds.
+CFLAGS_i686_pc_windows_msvc = "-D__SSE2__"
