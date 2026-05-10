@@ -34,5 +34,5 @@ install-path = "CARGO_HOME"
 install-updater = false
 
 # NASM is required by aws-lc-sys when cross-compiling for 32-bit Windows from Linux.
-[dist.system-dependencies.apt]
+[dist.dependencies.apt]
 nasm = { version = "*", targets = ["i686-pc-windows-msvc"] }
