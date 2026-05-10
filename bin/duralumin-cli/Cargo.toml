@@ -10,6 +10,22 @@ repository = "https://github.com/muu79/duralumin"
 name = "dura"
 path = "src/main.rs"
 
+[package.metadata.deb]
+name = "dura"
+section = "net"
+priority = "optional"
+maintainer = "muu <muu794@gmail.com>"
+# cargo-deb finds the service file in assets and auto-generates postinst/prerm
+# scripts that run `systemctl daemon-reload`. enable/start are false so the
+# user must configure /etc/dura/config.toml before manually enabling the unit.
+systemd-units = { enable = false, start = false }
+assets = [
+  ["target/release/dura",         "usr/bin/dura",                                "755"],
+  ["contrib/dura.service",         "lib/systemd/system/dura.service",             "644"],
+  ["examples/config.toml",         "usr/share/doc/dura/config.toml.example",      "644"],
+  ["README.md",                    "usr/share/doc/dura/README.md",                "644"],
+]
+
 [dependencies]
 duralumin-core       = { workspace = true }
 duralumin-feed       = { workspace = true }
