@@ -537,7 +537,7 @@ checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
 name = "duralumin-cli"
-version = "0.1.1-deb-test"
+version = "0.1.1-deb-test.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -567,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "duralumin-core"
-version = "0.1.1-deb-test"
+version = "0.1.1-deb-test.1"
 dependencies = [
  "chrono",
  "hex",
@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "duralumin-downloader"
-version = "0.1.1-deb-test"
+version = "0.1.1-deb-test.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -595,7 +595,7 @@ dependencies = [
 
 [[package]]
 name = "duralumin-feed"
-version = "0.1.1-deb-test"
+version = "0.1.1-deb-test.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -610,7 +610,7 @@ dependencies = [
 
 [[package]]
 name = "duralumin-metadata"
-version = "0.1.1-deb-test"
+version = "0.1.1-deb-test.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -622,7 +622,7 @@ dependencies = [
 
 [[package]]
 name = "duralumin-rules"
-version = "0.1.1-deb-test"
+version = "0.1.1-deb-test.1"
 dependencies = [
  "bytesize",
  "chrono",
@@ -637,7 +637,7 @@ dependencies = [
 
 [[package]]
 name = "duralumin-server"
-version = "0.1.1-deb-test"
+version = "0.1.1-deb-test.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "duralumin-storage"
-version = "0.1.1-deb-test"
+version = "0.1.1-deb-test.1"
 dependencies = [
  "chrono",
  "duralumin-core",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "duralumin-transcode"
-version = "0.1.1-deb-test"
+version = "0.1.1-deb-test.1"
 dependencies = [
  "anyhow",
  "duralumin-core",
