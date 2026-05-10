@@ -1,7 +1,0 @@
-[env]
-# aws-lc-sys's build script watches this exact target-scoped env var
-# (visible in build output as cargo:rerun-if-env-changed=AWS_LC_SYS_NO_ASM_i686_pc_windows_msvc).
-# Setting it switches i686-windows to a cmake + pure-C build, which avoids
-# the NASM PATH-timing issue on GitHub's Windows runners. windows-2022 has
-# cmake pre-installed. All other targets are unaffected.
-AWS_LC_SYS_NO_ASM_i686_pc_windows_msvc = "1"
