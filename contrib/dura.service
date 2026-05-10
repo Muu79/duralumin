@@ -28,6 +28,8 @@ SyslogIdentifier=dura
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
+# If your config uses a storage.dir or library_path outside these defaults,
+# add those paths here (space-separated) or override via a drop-in unit.
 ReadWritePaths=/var/lib/dura /etc/dura
 
 [Install]
