@@ -33,6 +33,8 @@ install-path = "CARGO_HOME"
 # on armv7, i686, and musl targets.
 install-updater = false
 
-# NASM is required by aws-lc-sys when cross-compiling for 32-bit Windows from Linux.
-[dist.dependencies.apt]
-nasm = { version = "*", targets = ["i686-pc-windows-msvc"] }
+# Build 32-bit Windows natively so MSVC's i686 toolchain handles SSE2 correctly.
+# Cross-compiling i686-windows from Linux via xwin/clang-cl can't satisfy
+# aws-lc-sys's __SSE2__ preprocessor requirement.
+[dist.github-custom-runners]
+i686-pc-windows-msvc = "windows-2022"
