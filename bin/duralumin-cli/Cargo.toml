@@ -18,7 +18,7 @@ path = "src/main.rs"
 name = "dura"
 section = "net"
 priority = "optional"
-maintainer = "muu <muu794@gmail.com>"
+maintainer = "muu <email@muaazbhyat.co.za>"
 # cargo-deb finds the service file in assets and auto-generates postinst/prerm
 # scripts that run `systemctl daemon-reload`. enable/start are false so the
 # user must configure /etc/dura/config.toml before manually enabling the unit.
