@@ -1,0 +1,47 @@
+name: Debian Package
+
+on:
+  push:
+    tags:
+      - '**[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+
+      - name: Build .deb
+        run: cargo deb -p duralumin-cli
+
+      - name: Wait for release
+        # The dist release.yml workflow creates the GitHub Release; this job
+        # runs in parallel so we poll until it appears (up to ~10 minutes).
+        run: |
+          for i in $(seq 1 20); do
+            if gh release view "${{ github.ref_name }}" > /dev/null 2>&1; then
+              echo "Release found"
+              exit 0
+            fi
+            echo "Attempt $i: release not yet available, waiting 30s..."
+            sleep 30
+          done
+          echo "Release was not created after 10 minutes — aborting."
+          exit 1
+
+      - name: Upload to release
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            target/debian/*.deb \
+            contrib/dura.service \
+            --clobber
