@@ -12,7 +12,7 @@ targets = [
   # macOS
   "aarch64-apple-darwin",
   "x86_64-apple-darwin",
-  # Windows — NASM is injected into the i686 build step via a conditional step in release.yml
+  # Windows
   "x86_64-pc-windows-msvc",
   "i686-pc-windows-msvc",
   # Linux glibc (requires glibc ≥ 2.35 on the host)
@@ -39,5 +39,3 @@ install-updater = false
 [dist.github-custom-runners]
 i686-pc-windows-msvc = "windows-2022"
 
-[dist.dependencies.chocolatey]
-nasm = { targets = ["i686-pc-windows-msvc"] }
