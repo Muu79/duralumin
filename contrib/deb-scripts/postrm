@@ -1,0 +1,23 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+    purge)
+        # Remove config and data only on explicit purge (not plain remove)
+        rm -rf /etc/dura
+        rm -rf /var/lib/dura
+
+        if getent passwd dura > /dev/null 2>&1; then
+            deluser --system dura || true
+        fi
+        if getent group dura > /dev/null 2>&1; then
+            delgroup --system dura || true
+        fi
+        ;&  # fall through
+
+    remove)
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload
+        fi
+        ;;
+esac

@@ -1,0 +1,42 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+    configure)
+        # Create system user and group if they don't exist
+        if ! getent group dura > /dev/null 2>&1; then
+            addgroup --system dura
+        fi
+        if ! getent passwd dura > /dev/null 2>&1; then
+            adduser --system \
+                    --ingroup dura \
+                    --no-create-home \
+                    --home /var/lib/dura \
+                    --shell /usr/sbin/nologin \
+                    --gecos "dura podcast daemon" \
+                    dura
+        fi
+
+        # Storage directory — owned by the daemon user
+        mkdir -p /var/lib/dura
+        chown dura:dura /var/lib/dura
+        chmod 750 /var/lib/dura
+
+        # Config directory — root-owned, group-readable by dura
+        mkdir -p /etc/dura
+        chown root:dura /etc/dura
+        chmod 750 /etc/dura
+
+        # Install default config only on first install (never overwrite user edits)
+        if [ ! -f /etc/dura/config.toml ]; then
+            install -m 640 -o root -g dura \
+                /usr/share/doc/dura/config.toml.debian \
+                /etc/dura/config.toml
+        fi
+
+        # Reload unit files
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload
+        fi
+        ;;
+esac

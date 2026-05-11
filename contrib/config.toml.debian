@@ -1,0 +1,29 @@
+# dura configuration — installed by the deb package
+# Full annotated reference: /usr/share/doc/dura/config.toml.example
+
+[storage]
+dir          = "/var/lib/dura"
+library_path = "/var/lib/dura/podcasts"
+state_db     = "/var/lib/dura/db/duralumin.db"
+
+[downloader]
+concurrent_downloads = 2
+attempt_timeout      = "20m"
+max_retries          = 3
+backoff_base         = "30s"
+
+[defaults]
+action_on_no_match = "skip"
+
+[logging]
+format = "pretty"
+level  = "info"
+
+# ── Add your feeds below ──────────────────────────────────────────────────────
+# After editing, run:  dura config validate
+# Then enable:         systemctl enable --now dura
+#
+# [[feeds]]
+# url            = "https://feeds.example.com/your-podcast.rss"
+# slug           = "your-podcast"
+# default_action = "download"

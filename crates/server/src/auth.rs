@@ -37,6 +37,10 @@ impl FromRequestParts<AppState> for AuthGuard {
             return Ok(AuthGuard);
         }
 
+        tracing::warn!(
+            path = %parts.uri.path(),
+            "unauthorized request — missing or invalid token"
+        );
         Err(StatusCode::UNAUTHORIZED)
     }
 }

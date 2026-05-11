@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
 
-use duralumin_core::{Action, EpisodeState};
+use duralumin_core::{Action, EpisodeState, ext_from_mime, sanitize_title};
 use duralumin_downloader::{DownloadResult, Downloader, DownloaderConfig};
 use duralumin_feed::FeedFetcher;
 use duralumin_metadata::write_tags;
@@ -107,6 +107,13 @@ enum FeedSub {
     List,
     /// Show detailed info and recent episodes for one feed.
     Info { slug: String },
+    /// Scan the library directory for existing files and mark matching
+    /// episodes as Complete in the database. Useful after restoring a backup,
+    /// migrating from another config, or recovering from a database mismatch.
+    Reimport {
+        /// Feed slug to scan, or omit to scan all feeds.
+        slug: Option<String>,
+    },
 }
 
 // ---- episode subcommand ----------------------------------------------------
@@ -366,6 +373,7 @@ async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
         Command::Feed(FeedArgs { sub }) => match sub {
             FeedSub::List => cmd_feed_list(db).await,
             FeedSub::Info { slug } => cmd_feed_info(db, &slug).await,
+            FeedSub::Reimport { slug } => cmd_feed_reimport(cfg, db, slug.as_deref()).await,
         },
         Command::Episode(EpisodeArgs { sub }) => match sub {
             EpisodeSub::List {
@@ -758,6 +766,47 @@ async fn run_downloads(
                 );
                 return;
             }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perm = std::fs::Permissions::from_mode(0o775);
+                if let Err(e) = tokio::fs::set_permissions(&feed_dir, perm).await {
+                    tracing::warn!(path = %feed_dir.display(), error = %e, "could not set feed directory permissions");
+                }
+            }
+
+            // Guard against re-downloading a file that already exists on disk
+            // (happens when a previous DB write succeeded for the file but the
+            // state update failed, leaving the episode queued again).
+            let stem = sanitize_title(&ep.title);
+            let ext = ext_from_mime(ep.enclosure_mime.as_deref(), ep.enclosure_url.as_str());
+            let existing = feed_dir.join(format!("{stem}.{ext}"));
+            if existing.exists() {
+                let downloaded_at = tokio::fs::metadata(&existing)
+                    .await
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map(chrono::DateTime::<Utc>::from)
+                    .unwrap_or_else(Utc::now);
+                let state = EpisodeState::Complete {
+                    path: existing.clone(),
+                    downloaded_at,
+                    sha256: String::new(),
+                };
+                match db.update_episode_state(&ep.id, &state).await {
+                    Ok(()) => tracing::info!(
+                        episode_id = %ep.id,
+                        path = %existing.display(),
+                        "file already on disk, marked complete without re-downloading"
+                    ),
+                    Err(e) => tracing::error!(
+                        episode_id = %ep.id,
+                        error = %e,
+                        "found pre-existing file but failed to mark complete"
+                    ),
+                }
+                return;
+            }
 
             let ep_id = ep.id.clone();
             let result = dl
@@ -979,6 +1028,106 @@ async fn cmd_feed_info(db: &Db, slug: &str) -> Result<()> {
             ]);
         }
         println!("{table}");
+    }
+    Ok(())
+}
+
+// ---- feed reimport ---------------------------------------------------------
+
+async fn cmd_feed_reimport(cfg: &config::Config, db: &Db, slug: Option<&str>) -> Result<()> {
+    let library = cfg.storage.library();
+    let feeds = db.list_feeds().await?;
+
+    let targets: Vec<_> = if let Some(s) = slug {
+        let found: Vec<_> = feeds.iter().filter(|f| f.slug == s).collect();
+        if found.is_empty() {
+            anyhow::bail!("feed {s:?} not found — run `dura sync` first");
+        }
+        found
+    } else {
+        feeds.iter().collect()
+    };
+
+    let mut total_matched = 0usize;
+    let mut total_already = 0usize;
+
+    for feed in targets {
+        let feed_dir = library.join(&feed.slug);
+        if !feed_dir.exists() {
+            println!(
+                "{} {}",
+                feed.slug.dimmed(),
+                "— directory not found, skipping".dimmed()
+            );
+            continue;
+        }
+
+        let eps = db
+            .list_episodes(EpisodeFilter {
+                feed_id: Some(feed.id),
+                ..Default::default()
+            })
+            .await?;
+
+        let mut matched = 0usize;
+        let mut already = 0usize;
+
+        for ep in &eps {
+            if matches!(&ep.state, EpisodeState::Complete { path, .. } if path.exists()) {
+                already += 1;
+                continue;
+            }
+
+            let stem = sanitize_title(&ep.title);
+            let ext = ext_from_mime(ep.enclosure_mime.as_deref(), ep.enclosure_url.as_str());
+
+            // Primary filename, then the dedup variant with short ID suffix.
+            let candidates = [
+                feed_dir.join(format!("{stem}.{ext}")),
+                feed_dir.join(format!("{stem}-{}.{ext}", ep.id.short())),
+            ];
+
+            let found_path = candidates.iter().find(|p| p.exists());
+            let Some(path) = found_path else { continue };
+
+            let downloaded_at = tokio::fs::metadata(path)
+                .await
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(chrono::DateTime::<Utc>::from)
+                .unwrap_or_else(Utc::now);
+
+            let state = EpisodeState::Complete {
+                path: path.clone(),
+                downloaded_at,
+                sha256: String::new(),
+            };
+            if let Err(e) = db.update_episode_state(&ep.id, &state).await {
+                tracing::warn!(episode_id = %ep.id, error = %e, "failed to update state");
+                continue;
+            }
+            matched += 1;
+        }
+
+        let name = feed.title.as_deref().unwrap_or(&feed.slug);
+        println!(
+            "{name}: {} matched, {} already complete, {} not found",
+            matched.to_string().green(),
+            already.to_string().dimmed(),
+            (eps.len() - matched - already).to_string().dimmed(),
+        );
+        total_matched += matched;
+        total_already += already;
+    }
+
+    if total_matched > 0 {
+        println!();
+        println!(
+            "Marked {} episode(s) as complete.",
+            total_matched.to_string().green().bold()
+        );
+    } else if total_already == 0 {
+        println!("No matching files found.");
     }
     Ok(())
 }

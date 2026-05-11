@@ -12,12 +12,14 @@ Group=dura
 # Point at whichever config file you use
 Environment=DURALUMIN_CONFIG=/etc/dura/config.toml
 
-ExecStart=/usr/local/bin/dura start
+ExecStart=/usr/bin/dura start
 # Reload triggers a restart so the new config is picked up on next start.
 # (Hot-reload without restart is not supported in v0.1.)
 ExecReload=/bin/kill -TERM $MAINPID
 Restart=on-failure
 RestartSec=30s
+# Group-writable dirs so files the daemon creates are accessible to the dura group
+UMask=0002
 
 # Keep logs going to journald
 StandardOutput=journal
@@ -26,8 +28,14 @@ SyslogIdentifier=dura
 
 # Basic hardening
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
+# ProtectSystem=full makes standard system dirs read-only (/usr, /boot, /etc
+# except via ReadWritePaths) without the namespace rebinding that
+# ProtectSystem=strict requires. Use full rather than strict when the storage
+# directory is a bind mount (e.g. from an LXC host or NAS), as strict can
+# make bind-mounted paths inaccessible even when listed in ReadWritePaths.
+ProtectSystem=full
+# Config is under /etc so explicitly allow writes there (daemon reads it but
+# the postinst copies it; list any other paths your config references).
 ReadWritePaths=/var/lib/dura /etc/dura
 
 [Install]
