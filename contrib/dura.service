@@ -18,6 +18,8 @@ ExecStart=/usr/bin/dura start
 ExecReload=/bin/kill -TERM $MAINPID
 Restart=on-failure
 RestartSec=30s
+# Group-writable dirs so files the daemon creates are accessible to the dura group
+UMask=0002
 
 # Keep logs going to journald
 StandardOutput=journal
@@ -26,10 +28,14 @@ SyslogIdentifier=dura
 
 # Basic hardening
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-# If your config uses a storage.dir or library_path outside these defaults,
-# add those paths here (space-separated) or override via a drop-in unit.
+# ProtectSystem=full makes standard system dirs read-only (/usr, /boot, /etc
+# except via ReadWritePaths) without the namespace rebinding that
+# ProtectSystem=strict requires. Use full rather than strict when the storage
+# directory is a bind mount (e.g. from an LXC host or NAS), as strict can
+# make bind-mounted paths inaccessible even when listed in ReadWritePaths.
+ProtectSystem=full
+# Config is under /etc so explicitly allow writes there (daemon reads it but
+# the postinst copies it; list any other paths your config references).
 ReadWritePaths=/var/lib/dura /etc/dura
 
 [Install]
