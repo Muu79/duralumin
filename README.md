@@ -161,6 +161,10 @@ dura episode list --feed <slug> # episodes for one feed
 dura episode list --state complete
 ```
 
+Any command that accepts a `<slug>` also accepts any alias configured for that
+feed. For example, if `aliases = ["mfp"]` is set on the `my-favourite-podcast`
+feed, `dura feed info mfp` works identically to `dura feed info my-favourite-podcast`.
+
 ### Syncing and downloading
 
 ```bash
@@ -249,6 +253,10 @@ Add `?key=<token>` (or `Authorization: Bearer <token>`) to authenticate. The
 token is embedded in enclosure URLs automatically so podcast apps can fetch
 audio without separate auth headers.
 
+The restreamed feed only includes episodes that are downloaded (`Complete`) or
+queued for download. Skipped, discovered, and quarantined episodes are excluded
+so the feed presented to podcast apps is always clean.
+
 **With a reverse proxy** (nginx example):
 ```nginx
 location / {
@@ -317,6 +325,7 @@ complete -c dura -n '__fish_seen_subcommand_from episode; and __fish_seen_subcom
 | `[downloader]` | `concurrent_downloads` | `2` | Parallel download limit. |
 | `[downloader]` | `max_retries` | `3` | Attempts before quarantine. |
 | `[downloader]` | `attempt_timeout` | `"20m"` | Per-attempt HTTP timeout. |
+| `[downloader]` | `max_bytes_per_sec` | `0` | Per-download bandwidth cap in bytes/sec; `0` = uncapped. |
 | `[logging]` | `level` | `"info"` | `error` / `warn` / `info` / `debug` / `trace` |
 | `[logging]` | `format` | `"pretty"` | `"pretty"` or `"json"` |
 | `[defaults]` | `action_on_no_match` | `"skip"` | `"download"` or `"skip"` |
@@ -325,6 +334,8 @@ complete -c dura -n '__fish_seen_subcommand_from episode; and __fish_seen_subcom
 | `[server]` | `auth_token` | — | Optional bearer token |
 | `[[feeds]]` | `url` | — | RSS/Atom feed URL |
 | `[[feeds]]` | `slug` | — | Unique identifier, used in paths and logs |
+| `[[feeds]]` | `display_name` | — | Human-readable label for CLI output (falls back to RSS title) |
+| `[[feeds]]` | `aliases` | `[]` | Alternative identifiers accepted by slug CLI arguments |
 | `[[feeds]]` | `poll_interval` | `"1h"` | How often `dura start` re-checks this feed |
 | `[[feeds]]` | `enabled` | `true` | Set `false` to pause without removing |
 | `[[feeds]]` | `restream` | `false` | Expose via the restream server |

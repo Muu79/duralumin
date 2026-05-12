@@ -34,6 +34,15 @@ backoff_base = "30s"
 # generic agents.
 user_agent = "duralumin/0.1 (+https://github.com/yourname/duralumin)"
 
+# Per-download bandwidth cap in bytes per second. 0 = uncapped (default).
+# Useful on metered or shared connections. This is a per-download cap, not an
+# aggregate: with concurrent_downloads = 2 and max_bytes_per_sec = 500000,
+# total throughput is capped at ~1 MB/s.
+# Examples: 102400 = 100 KB/s  |  524288 = 512 KB/s  |  1048576 = 1 MB/s
+# Note: if rate limiting, ensure attempt_timeout is long enough to complete the
+# largest episode at the chosen rate (500 MB at 100 KB/s needs ~87 min).
+# max_bytes_per_sec = 0
+
 
 # --- Defaults -----------------------------------------------------------------
 
@@ -126,6 +135,11 @@ match.value   = "500 MB"
 # --- Feeds --------------------------------------------------------------------
 # Each [[feeds]] block is one RSS/Atom feed.
 # slug          — filesystem-safe identifier; used in log output. Must be unique.
+# display_name  — optional human-readable label shown in CLI output.
+#                 Falls back to the RSS feed title, then the slug.
+# aliases       — optional list of alternative identifiers accepted by slug-typed
+#                 CLI arguments (e.g. `dura feed info <alias>`). Must be globally
+#                 unique across all slugs and aliases.
 # poll_interval — how often `dura start` re-checks this feed.
 #                 Not used when running via cron/systemd timer (use `dura sync` there).
 # restream      — expose this feed through the RSS restream server (default: false).
@@ -137,6 +151,8 @@ match.value   = "500 MB"
 [[feeds]]
 url           = "https://feeds.example.com/my-favourite-podcast.rss"
 slug          = "my-favourite-podcast"
+display_name  = "My Favourite Podcast"   # shown in `dura status` and `dura feed list`
+aliases       = ["mfp", "favourite"]     # `dura feed info mfp` resolves to this feed
 poll_interval = "1h"
 restream      = true   # expose via <base_url>/rss/my-favourite-podcast
 

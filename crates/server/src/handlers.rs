@@ -7,7 +7,7 @@ use axum::{
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
-use duralumin_core::{EpisodeId, EpisodeState};
+use duralumin_core::{Action, EpisodeId, EpisodeState};
 use duralumin_storage::EpisodeFilter;
 
 use crate::{AppState, auth::AuthGuard, rss};
@@ -37,6 +37,18 @@ pub async fn rss_handler(
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
+
+    // Only expose downloaded or queued episodes. Skipped, Discovered, and
+    // Quarantined episodes are not meaningful to a podcast app.
+    let episodes: Vec<_> = episodes
+        .into_iter()
+        .filter(|ep| {
+            matches!(
+                &ep.state,
+                EpisodeState::Complete { .. } | EpisodeState::Matched(Action::Download)
+            )
+        })
+        .collect();
 
     let xml = rss::build_rss(&feed, &episodes, &state.config, &slug);
     tracing::debug!(slug, episodes = episodes.len(), "served RSS feed");

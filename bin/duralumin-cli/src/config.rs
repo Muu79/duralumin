@@ -38,6 +38,9 @@ fn default_user_agent() -> String {
 fn default_accept_invalid_certs() -> bool {
     false
 }
+fn default_max_bytes_per_sec() -> u64 {
+    0
+}
 fn default_log_level() -> String {
     "info".into()
 }
@@ -120,6 +123,9 @@ pub struct DownloaderConfig {
     pub user_agent: String,
     #[serde(default = "default_accept_invalid_certs")]
     pub accept_invalid_certs: bool,
+    /// Per-download bandwidth cap in bytes per second. `0` = uncapped (default).
+    #[serde(default = "default_max_bytes_per_sec")]
+    pub max_bytes_per_sec: u64,
 }
 
 impl Default for DownloaderConfig {
@@ -131,6 +137,7 @@ impl Default for DownloaderConfig {
             backoff_base: default_backoff_base(),
             user_agent: default_user_agent(),
             accept_invalid_certs: default_accept_invalid_certs(),
+            max_bytes_per_sec: default_max_bytes_per_sec(),
         }
     }
 }
@@ -190,11 +197,32 @@ pub fn load(override_path: Option<&Path>) -> Result<(Config, PathBuf), ConfigErr
 fn validate(cfg: &Config) -> Result<(), ConfigError> {
     let mut errors = Vec::new();
 
-    // Slug uniqueness
-    let mut seen = std::collections::HashSet::new();
+    // All slugs and aliases must be unique across the entire config.
+    // key = identifier, value = human-readable description for error context.
+    let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for feed in &cfg.feeds {
-        if !seen.insert(feed.slug.as_str()) {
-            errors.push(format!("duplicate feed slug: {:?}", feed.slug));
+        if feed.slug.is_empty() {
+            errors.push("feed has an empty slug".into());
+            continue;
+        }
+
+        let slug_desc = format!("slug of feed {:?}", feed.slug);
+        if let Some(prev) = seen.insert(feed.slug.clone(), slug_desc) {
+            errors.push(format!("feed slug {:?} conflicts with {prev}", feed.slug));
+        }
+
+        for alias in &feed.aliases {
+            if alias.is_empty() {
+                errors.push(format!("[feed {}] alias must not be empty", feed.slug));
+                continue;
+            }
+            let alias_desc = format!("alias {:?} of feed {:?}", alias, feed.slug);
+            if let Some(prev) = seen.insert(alias.clone(), alias_desc) {
+                errors.push(format!(
+                    "[feed {}] alias {:?} conflicts with {prev}",
+                    feed.slug, alias
+                ));
+            }
         }
     }
 

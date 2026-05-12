@@ -33,6 +33,14 @@ fn default_enabled() -> bool {
 pub struct FeedConfig {
     pub url: Url,
     pub slug: String,
+    /// Optional human-readable name shown in CLI output.
+    /// Falls back to the RSS feed title, then the slug.
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Alternative identifiers accepted by slug-typed CLI arguments.
+    /// Must be globally unique across all slugs and aliases.
+    #[serde(default)]
+    pub aliases: Vec<String>,
     #[serde(default = "default_poll_interval", deserialize_with = "de_duration")]
     pub poll_interval: Duration,
     #[serde(default = "default_enabled")]

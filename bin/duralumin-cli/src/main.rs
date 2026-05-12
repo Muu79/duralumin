@@ -32,6 +32,7 @@ impl From<&config::DownloaderConfig> for DownloaderConfig {
             backoff_base: c.backoff_base,
             user_agent: c.user_agent.clone(),
             accept_invalid_certs: c.accept_invalid_certs,
+            max_bytes_per_sec: c.max_bytes_per_sec,
         }
     }
 }
@@ -237,8 +238,6 @@ enum DbSub {
 
 #[tokio::main]
 async fn main() {
-    // rustls 0.23 requires an explicit crypto provider; install aws-lc-rs before
-    // any TLS connection is attempted (reqwest 0.13 does not do this automatically).
     ring::default_provider().install_default().ok();
 
     let cli = Cli::parse();
@@ -366,14 +365,34 @@ async fn main() {
     }
 }
 
+// ---- Slug resolution -------------------------------------------------------
+
+/// Resolve a slug or alias to the canonical feed slug.
+/// If the input matches a configured alias, returns the owning feed's slug.
+/// If the input matches no feed at all, returns it unchanged (DB lookup will fail naturally).
+fn resolve_slug(cfg: &config::Config, input: &str) -> String {
+    for feed in &cfg.feeds {
+        if feed.slug == input {
+            return feed.slug.clone();
+        }
+        if feed.aliases.iter().any(|a| a == input) {
+            return feed.slug.clone();
+        }
+    }
+    input.to_owned()
+}
+
 // ---- Command dispatch ------------------------------------------------------
 
 async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
     match command {
         Command::Feed(FeedArgs { sub }) => match sub {
-            FeedSub::List => cmd_feed_list(db).await,
-            FeedSub::Info { slug } => cmd_feed_info(db, &slug).await,
-            FeedSub::Reimport { slug } => cmd_feed_reimport(cfg, db, slug.as_deref()).await,
+            FeedSub::List => cmd_feed_list(cfg, db).await,
+            FeedSub::Info { slug } => cmd_feed_info(cfg, db, &resolve_slug(cfg, &slug)).await,
+            FeedSub::Reimport { slug } => {
+                let resolved = slug.as_deref().map(|s| resolve_slug(cfg, s));
+                cmd_feed_reimport(cfg, db, resolved.as_deref()).await
+            }
         },
         Command::Episode(EpisodeArgs { sub }) => match sub {
             EpisodeSub::List {
@@ -381,7 +400,17 @@ async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
                 state,
                 limit,
                 completions,
-            } => cmd_episode_list(db, feed.as_deref(), state.as_deref(), limit, completions).await,
+            } => {
+                let resolved_feed = feed.as_deref().map(|s| resolve_slug(cfg, s));
+                cmd_episode_list(
+                    db,
+                    resolved_feed.as_deref(),
+                    state.as_deref(),
+                    limit,
+                    completions,
+                )
+                .await
+            }
             EpisodeSub::Requeue { id } => cmd_requeue(db, &id).await,
             EpisodeSub::Delete { id, delete_file } => {
                 cmd_episode_delete(db, &id, delete_file).await
@@ -395,7 +424,9 @@ async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
             QuarantineSub::Retry { id } => cmd_requeue(db, &id).await,
         },
         Command::Rules(RulesArgs { sub }) => match sub {
-            RulesSub::Check { slug } => cmd_rules_check(cfg, db, &slug).await,
+            RulesSub::Check { slug } => {
+                cmd_rules_check(cfg, db, &resolve_slug(cfg, &slug)).await
+            }
             RulesSub::List => cmd_rules_list(cfg),
         },
         Command::Config(ConfigArgs { sub }) => match sub {
@@ -407,7 +438,7 @@ async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
                 Ok(())
             }
         },
-        Command::Status => cmd_status(db).await,
+        Command::Status => cmd_status(cfg, db).await,
         Command::Check(CheckArgs { fix }) => cmd_check(db, fix).await,
         Command::Completions { .. } => unreachable!("handled before DB open"),
     }
@@ -422,12 +453,15 @@ async fn cmd_sync(cfg: &config::Config, db: &Db, args: SyncArgs) -> Result<()> {
         cfg.downloader.accept_invalid_certs,
     );
 
-    let feeds_to_sync: Vec<&FeedConfig> = if args.slugs.is_empty() {
+    // Resolve any aliases to canonical slugs before filtering.
+    let resolved_slugs: Vec<String> = args.slugs.iter().map(|s| resolve_slug(cfg, s)).collect();
+
+    let feeds_to_sync: Vec<&FeedConfig> = if resolved_slugs.is_empty() {
         cfg.feeds.iter().filter(|f| f.enabled).collect()
     } else {
         cfg.feeds
             .iter()
-            .filter(|f| args.slugs.contains(&f.slug))
+            .filter(|f| resolved_slugs.contains(&f.slug))
             .collect()
     };
 
@@ -436,7 +470,7 @@ async fn cmd_sync(cfg: &config::Config, db: &Db, args: SyncArgs) -> Result<()> {
     }
 
     if args.recheck {
-        recheck_episodes(db, &engine, &args.slugs).await?;
+        recheck_episodes(db, &engine, &resolved_slugs).await?;
     }
 
     if !args.feeds_only {
@@ -505,21 +539,28 @@ async fn sync_one_feed(feed_cfg: &FeedConfig, db: &Db, engine: &RuleEngine, fetc
 
 // ---- feed list -------------------------------------------------------------
 
-async fn cmd_feed_list(db: &Db) -> Result<()> {
+async fn cmd_feed_list(cfg: &config::Config, db: &Db) -> Result<()> {
     let feeds = db.list_feeds().await?;
     if feeds.is_empty() {
         println!("{}", "No feeds in database.".dimmed());
         return Ok(());
     }
     let mut table = make_table();
-    table.set_header(["SLUG", "TITLE", "LAST FETCHED"]);
+    table.set_header(["SLUG", "NAME", "LAST FETCHED"]);
     for f in feeds {
         let last = f
             .last_fetched_at
             .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_else(|| "never".into());
-        let title = f.title.as_deref().unwrap_or("—");
-        table.add_row([f.slug.as_str(), title, &last]);
+        // Display name: config display_name > RSS title > "—"
+        let name = cfg
+            .feeds
+            .iter()
+            .find(|c| c.slug == f.slug)
+            .and_then(|c| c.display_name.as_deref())
+            .or(f.title.as_deref())
+            .unwrap_or("—");
+        table.add_row([f.slug.as_str(), name, &last]);
     }
     println!("{table}");
     Ok(())
@@ -598,8 +639,7 @@ async fn cmd_start(cfg: &config::Config, db: &Db) -> Result<()> {
     warn_missing_files(db).await;
 
     // Start the RSS restream server if any feed has restream=true and [server] is configured.
-    let any_restream = cfg.feeds.iter().any(|f| f.restream);
-    if any_restream {
+    if cfg.feeds.iter().any(|f| f.restream) {
         match &cfg.server {
             Some(srv_cfg) => {
                 let server_db = db.clone();
@@ -909,7 +949,7 @@ async fn cmd_rules_check(cfg: &config::Config, db: &Db, slug: &str) -> Result<()
 
 // ---- status ----------------------------------------------------------------
 
-async fn cmd_status(db: &Db) -> Result<()> {
+async fn cmd_status(cfg: &config::Config, db: &Db) -> Result<()> {
     let feeds = db.list_feeds().await?;
     if feeds.is_empty() {
         println!(
@@ -931,7 +971,14 @@ async fn cmd_status(db: &Db) -> Result<()> {
             .await?;
 
         let c = EpisodeCounts::tally(&eps);
-        let name = feed.title.as_deref().unwrap_or(&feed.slug);
+        // Display name: config display_name > RSS title > slug
+        let name = cfg
+            .feeds
+            .iter()
+            .find(|c| c.slug == feed.slug)
+            .and_then(|c| c.display_name.as_deref())
+            .or(feed.title.as_deref())
+            .unwrap_or(&feed.slug);
         let quar_cell = if c.quarantined > 0 {
             Cell::new(c.quarantined).fg(Color::Red)
         } else {
@@ -957,11 +1004,13 @@ async fn cmd_status(db: &Db) -> Result<()> {
 
 // ---- feed info -------------------------------------------------------------
 
-async fn cmd_feed_info(db: &Db, slug: &str) -> Result<()> {
+async fn cmd_feed_info(cfg: &config::Config, db: &Db, slug: &str) -> Result<()> {
     let feed = db
         .get_feed_by_slug(slug)
         .await?
         .with_context(|| format!("feed {slug:?} not found — run `dura feed sync` first"))?;
+
+    let config_feed = cfg.feeds.iter().find(|c| c.slug == slug);
 
     let all_eps = db
         .list_episodes(EpisodeFilter {
@@ -977,10 +1026,24 @@ async fn cmd_feed_info(db: &Db, slug: &str) -> Result<()> {
         .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
         .unwrap_or_else(|| "never".into());
 
-    println!("{}", feed.title.as_deref().unwrap_or(&feed.slug).bold());
-    println!("  {} {}", "Slug:".dimmed(), feed.slug);
+    // Display name: config display_name > RSS title > slug
+    let display = config_feed
+        .and_then(|c| c.display_name.as_deref())
+        .or(feed.title.as_deref())
+        .unwrap_or(&feed.slug);
+
+    println!(
+        "{} {}",
+        display.bold(),
+        format!("({})", feed.slug).dimmed()
+    );
     println!("  {} {}", "URL:".dimmed(), feed.url);
     println!("  {} {}", "Last fetched:".dimmed(), last);
+    if let Some(cf) = config_feed
+        && !cf.aliases.is_empty()
+    {
+        println!("  {} {}", "Aliases:".dimmed(), cf.aliases.join(", "));
+    }
     println!();
 
     // Summary counts
@@ -1187,7 +1250,17 @@ fn cmd_rules_list(cfg: &config::Config) -> Result<()> {
 
     for feed in &cfg.feeds {
         println!();
-        println!("{} {}", "Feed:".bold(), feed.slug);
+        let feed_label = feed.display_name.as_deref().unwrap_or(&feed.slug);
+        if feed.display_name.is_some() {
+            println!(
+                "{} {} {}",
+                "Feed:".bold(),
+                feed_label,
+                format!("({})", feed.slug).dimmed()
+            );
+        } else {
+            println!("{} {}", "Feed:".bold(), feed_label);
+        }
         if feed.rules.is_empty() {
             println!("  {}", "(none — global rules apply)".dimmed());
         } else {

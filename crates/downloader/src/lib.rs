@@ -18,6 +18,8 @@ pub struct DownloaderConfig {
     pub backoff_base: Duration,
     pub user_agent: String,
     pub accept_invalid_certs: bool,
+    /// Per-download bandwidth cap in bytes per second. `0` = uncapped.
+    pub max_bytes_per_sec: u64,
 }
 
 // ---- Error -----------------------------------------------------------------
@@ -271,9 +273,22 @@ impl Downloader {
 
         let mut stream = resp;
         while let Some(chunk) = stream.chunk().await? {
+            let chunk_start = std::time::Instant::now();
             hasher.update(&chunk);
             file.write_all(&chunk).await?;
             bytes_written += chunk.len() as u64;
+
+            // Rate limiting: sleep to honour max_bytes_per_sec if set.
+            // elapsed accounts for hashing + I/O time so we don't over-sleep.
+            if self.config.max_bytes_per_sec > 0 {
+                let elapsed = chunk_start.elapsed();
+                let expected = Duration::from_secs_f64(
+                    chunk.len() as f64 / self.config.max_bytes_per_sec as f64,
+                );
+                if expected > elapsed {
+                    tokio::time::sleep(expected - elapsed).await;
+                }
+            }
         }
         file.flush().await?;
         drop(file);
