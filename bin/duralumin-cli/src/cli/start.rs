@@ -86,13 +86,11 @@ pub async fn cmd_start(cfg: &config::Config, db: &Db) -> Result<()> {
             loop {
                 ticker.tick().await;
                 feed_sync::sync_one_feed(&feed_cfg, &db, &engine, &fetcher, false).await;
-                if feed_cfg.restream {
-                    if let Some(ctx) = &rss_ctx {
-                        if let Err(e) = rss_gen::generate_rss_for_feed(&feed_cfg, &db, ctx).await {
+                if feed_cfg.restream
+                    && let Some(ctx) = &rss_ctx
+                        && let Err(e) = rss_gen::generate_rss_for_feed(&feed_cfg, &db, ctx).await {
                             tracing::warn!(slug = %feed_cfg.slug, error = %e, "RSS generation failed after sync");
                         }
-                    }
-                }
             }
         });
     }

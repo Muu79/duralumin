@@ -173,8 +173,8 @@ pub fn centered_rect(width: u16, height: u16, outer: Rect) -> Rect {
 /// Cascade:
 ///   1. arboard  — works in local GUI environments
 ///   2. OSC 52   — terminal escape sequence; works in modern terminals over SSH
-///                 (iTerm2, WezTerm, kitty, foot, xterm, …) — no confirmation
-///                 is possible so we assume success if the write succeeds
+///      (iTerm2, WezTerm, kitty, foot, xterm, …) — no confirmation
+///      is possible so we assume success if the write succeeds
 ///   3. stderr   — last resort when both above fail
 pub fn copy_to_clipboard(text: &str) -> String {
     if arboard::Clipboard::new()
@@ -214,7 +214,7 @@ fn try_osc52(text: &str) -> bool {
 /// Minimal standard base64 encoder (RFC 4648) — avoids adding a crate dep.
 fn b64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0];
         let b1 = chunk.get(1).copied().unwrap_or(0);

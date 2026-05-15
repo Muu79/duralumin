@@ -300,9 +300,9 @@ async fn purge_cycle(
             }
             _ => {
                 // Outside the window — delete the file and mark Purged.
-                if let EpisodeState::Dynamic { ref path, .. } = ep.state {
-                    if let Err(e) = tokio::fs::remove_file(path).await {
-                        if e.kind() != std::io::ErrorKind::NotFound {
+                if let EpisodeState::Dynamic { ref path, .. } = ep.state
+                    && let Err(e) = tokio::fs::remove_file(path).await
+                        && e.kind() != std::io::ErrorKind::NotFound {
                             tracing::warn!(
                                 episode_id = %ep.id,
                                 path = %path.display(),
@@ -310,8 +310,6 @@ async fn purge_cycle(
                                 "could not delete dynamic episode file during purge"
                             );
                         }
-                    }
-                }
                 let new_state = EpisodeState::Purged {
                     purged_at: Utc::now(),
                 };

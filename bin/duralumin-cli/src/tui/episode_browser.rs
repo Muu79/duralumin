@@ -265,7 +265,7 @@ fn render(f: &mut ratatui::Frame, state: &State) {
     let fixed = 35usize;
     let title_w = inner_width.saturating_sub(fixed);
 
-    let mut list_state = state.list_state.clone();
+    let mut list_state = state.list_state;
     let items: Vec<ListItem> = state
         .visible
         .iter()

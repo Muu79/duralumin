@@ -46,13 +46,11 @@ pub async fn cmd_sync(cfg: &config::Config, db: &Db, args: SyncArgs) -> Result<(
 
     for feed_cfg in feeds_to_sync {
         feed_sync::sync_one_feed(feed_cfg, db, &engine, &fetcher, args.recheck).await;
-        if feed_cfg.restream {
-            if let Some(ctx) = &rss_ctx {
-                if let Err(e) = rss_gen::generate_rss_for_feed(feed_cfg, db, ctx).await {
+        if feed_cfg.restream
+            && let Some(ctx) = &rss_ctx
+                && let Err(e) = rss_gen::generate_rss_for_feed(feed_cfg, db, ctx).await {
                     tracing::warn!(slug = %feed_cfg.slug, error = %e, "RSS generation failed after sync");
                 }
-            }
-        }
     }
 
     if !args.feeds_only {
