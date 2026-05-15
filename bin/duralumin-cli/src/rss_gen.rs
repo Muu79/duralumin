@@ -6,6 +6,8 @@ use duralumin_rules::config::FeedConfig;
 use duralumin_server::ServerConfig;
 use duralumin_storage::{Db, EpisodeFilter};
 
+use crate::config;
+
 /// Everything the RSS generator needs beyond the DB handle.
 #[derive(Clone)]
 pub struct RssContext {
@@ -15,6 +17,16 @@ pub struct RssContext {
     /// Root for cached cover art at `{slug}/cover.{ext}`.
     pub images_dir: PathBuf,
     pub http: reqwest::Client,
+}
+
+/// Build an `RssContext` if the config has a `[server]` block; returns `None` otherwise.
+pub fn build_rss_ctx(cfg: &config::Config) -> Option<RssContext> {
+    cfg.server.as_ref().map(|srv_cfg| RssContext {
+        server_cfg: Arc::new(srv_cfg.clone()),
+        rss_dir: cfg.storage.dir.join("rss"),
+        images_dir: cfg.storage.dir.join("images"),
+        http: reqwest::Client::new(),
+    })
 }
 
 /// Regenerate the static `{rss_dir}/{slug}.xml` for a restream-enabled feed.
@@ -107,21 +119,19 @@ async fn cache_cover_image(
     }
 
     match ctx.http.get(image_url.as_str()).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            match resp.bytes().await {
-                Ok(bytes) => {
-                    if let Err(e) = tokio::fs::write(&cover_path, &bytes).await {
-                        tracing::warn!(slug = %feed_cfg.slug, error = %e, "failed to write cover image");
-                        return None;
-                    }
-                    Some(build_cover_url(ctx, &feed_cfg.slug, ext))
+        Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+            Ok(bytes) => {
+                if let Err(e) = tokio::fs::write(&cover_path, &bytes).await {
+                    tracing::warn!(slug = %feed_cfg.slug, error = %e, "failed to write cover image");
+                    return None;
                 }
-                Err(e) => {
-                    tracing::warn!(slug = %feed_cfg.slug, error = %e, "failed to read cover image response");
-                    None
-                }
+                Some(build_cover_url(ctx, &feed_cfg.slug, ext))
             }
-        }
+            Err(e) => {
+                tracing::warn!(slug = %feed_cfg.slug, error = %e, "failed to read cover image response");
+                None
+            }
+        },
         Ok(resp) => {
             tracing::warn!(slug = %feed_cfg.slug, status = %resp.status(), "cover image fetch returned non-2xx");
             None

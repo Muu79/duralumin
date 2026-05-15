@@ -102,21 +102,16 @@ impl std::fmt::Display for EpisodeState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
+    #[default]
     Download,
     Dynamic,
     Skip,
     Purge,
     Archive,
     Quarantine,
-}
-
-impl Default for Action {
-    fn default() -> Self {
-        Action::Download
-    }
 }
 
 impl std::fmt::Display for Action {

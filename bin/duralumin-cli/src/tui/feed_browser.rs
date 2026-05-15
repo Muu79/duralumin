@@ -92,12 +92,7 @@ pub fn run(
                     KeyAction::Quit => return Ok(Action::Quit),
                     KeyAction::OpenEpisodes(slug) => {
                         super::episode_browser::run(
-                            handle,
-                            db,
-                            cfg_feeds,
-                            server_cfg,
-                            terminal,
-                            &slug,
+                            handle, db, cfg_feeds, server_cfg, terminal, &slug,
                         )?;
                         // Reload feeds in case states changed while in episode browser.
                         state.feeds = handle.block_on(db.list_feeds())?;

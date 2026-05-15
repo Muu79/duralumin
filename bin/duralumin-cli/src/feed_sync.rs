@@ -7,19 +7,7 @@ use duralumin_rules::{RuleEngine, config::FeedConfig};
 use duralumin_storage::{Db, EpisodeFilter};
 use tracing::info;
 
-fn feed_from_config(fc: &FeedConfig) -> Feed {
-    Feed {
-        id: FeedId(0),
-        url: fc.url.clone(),
-        slug: fc.slug.clone(),
-        title: None,
-        last_fetched_at: None,
-        etag: None,
-        last_modified: None,
-        enabled: fc.enabled,
-        image_url: None,
-    }
-}
+use crate::cli::helpers::feed_from_config;
 
 /// Fetch one feed, upsert new episodes, evaluate rules, enqueue downloads,
 /// then run the purge cycle for any existing Dynamic episodes.
@@ -274,10 +262,7 @@ async fn purge_cycle(
     }
 
     for mut ep in dynamic_eps {
-        ep.episode_no = episode_no_map
-            .get(&ep.id)
-            .copied()
-            .unwrap_or(usize::MAX);
+        ep.episode_no = episode_no_map.get(&ep.id).copied().unwrap_or(usize::MAX);
 
         let action = engine.evaluate(&ep, feed);
 

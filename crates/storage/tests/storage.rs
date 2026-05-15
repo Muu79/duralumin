@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use chrono::{TimeZone, Utc};
+use duralumin_core::Action;
 use duralumin_core::{Episode, EpisodeId, EpisodeState, Feed, FeedId};
 use duralumin_storage::{Db, EpisodeFilter};
-use duralumin_core::Action;
 use url::Url;
 
 async fn open_mem_db() -> Db {
@@ -271,7 +271,10 @@ async fn cascade_delete_clears_queue_entry() {
 
     db.delete_episode(&ep.id).await.unwrap();
     let queue = db.get_queue().await.unwrap();
-    assert!(queue.is_empty(), "queue entry should cascade-delete with episode");
+    assert!(
+        queue.is_empty(),
+        "queue entry should cascade-delete with episode"
+    );
 }
 
 // ---- Episode list filter ---------------------------------------------------

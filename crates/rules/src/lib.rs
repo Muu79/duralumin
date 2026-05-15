@@ -2,14 +2,14 @@ pub mod config;
 
 pub use config::{FeedConfig, RuleConfig, RuleKind, validate_rules};
 
-use std::time::Duration;
 use std::collections::HashMap;
+use std::time::Duration;
 
+use crate::config::{DynamicRuleConfig, DynamicRuleKind};
 use chrono::{DateTime, TimeDelta, Utc};
 use duralumin_core::{Action, Episode, Feed, FeedId};
 use regex::Regex;
 use tracing::debug;
-use crate::config::{DynamicRuleConfig, DynamicRuleKind};
 
 // ---- Rule trait ------------------------------------------------------------
 
@@ -355,9 +355,9 @@ impl RuleEngine {
             .get(&feed.id)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        
-        for dyn_rule in dynamic_rules.into_iter().chain(&self.dynamic) {
-            if let Some(_) = dyn_rule.evaluate(episode, feed) {
+
+        for dyn_rule in dynamic_rules.iter().chain(&self.dynamic) {
+            if dyn_rule.evaluate(episode, feed).is_some() {
                 debug!(
                     episode_id = %episode.id,
                     dynamic_rule = %dyn_rule.name(),
@@ -366,7 +366,7 @@ impl RuleEngine {
                 return Action::Dynamic;
             }
         }
-        
+
         let per_feed_rules = self
             .per_feed
             .get(&feed.id)

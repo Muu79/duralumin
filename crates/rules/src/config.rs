@@ -40,7 +40,6 @@ fn default_restream_only_matched() -> bool {
     true
 }
 
-
 // ---- Config types ----------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize)]
@@ -78,7 +77,7 @@ pub struct FeedConfig {
     pub default_action: Option<Action>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialOrd, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct RuleConfig {
     pub name: String,
     #[serde(default)]
@@ -87,9 +86,16 @@ pub struct RuleConfig {
     pub match_: RuleKind,
     pub action: Action,
 }
+
 impl Ord for RuleConfig {
     fn cmp(&self, other: &Self) -> Ordering {
         self.priority.cmp(&other.priority)
+    }
+}
+
+impl PartialOrd for RuleConfig {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -147,7 +153,9 @@ pub enum DynamicRuleKind {
 impl Display for DynamicRuleKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            DynamicRuleKind::LastNEpisodes { last_n_episodes: n } => write!(f, "Download the last {} episodes", n),
+            DynamicRuleKind::LastNEpisodes { last_n_episodes: n } => {
+                write!(f, "Download the last {} episodes", n)
+            }
             DynamicRuleKind::DurationAgo { duration } => {
                 let days = duration.num_days();
                 write!(f, "Download episodes released over the last {} days", days)

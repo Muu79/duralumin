@@ -25,14 +25,38 @@ struct EpStyle {
 
 fn ep_style(state: &EpisodeState) -> EpStyle {
     match state {
-        EpisodeState::Complete { .. } | EpisodeState::Dynamic { .. } => EpStyle { symbol: "✓", color: Color::Green },
-        EpisodeState::Matched(Action::Download | Action::Dynamic) => EpStyle { symbol: "↓", color: Color::Cyan },
-        EpisodeState::Matched(Action::Skip | Action::Purge) => EpStyle { symbol: "–", color: Color::DarkGray },
-        EpisodeState::Discovered => EpStyle { symbol: "?", color: Color::Yellow },
-        EpisodeState::Quarantined { .. } => EpStyle { symbol: "!", color: Color::Red },
-        EpisodeState::Purged { .. } => EpStyle { symbol: "–", color: Color::DarkGray },
-        EpisodeState::Failed { .. } | EpisodeState::Downloading { .. } => EpStyle { symbol: "↓", color: Color::Blue },
-        _ => EpStyle { symbol: " ", color: Color::Reset },
+        EpisodeState::Complete { .. } | EpisodeState::Dynamic { .. } => EpStyle {
+            symbol: "✓",
+            color: Color::Green,
+        },
+        EpisodeState::Matched(Action::Download | Action::Dynamic) => EpStyle {
+            symbol: "↓",
+            color: Color::Cyan,
+        },
+        EpisodeState::Matched(Action::Skip | Action::Purge) => EpStyle {
+            symbol: "–",
+            color: Color::DarkGray,
+        },
+        EpisodeState::Discovered => EpStyle {
+            symbol: "?",
+            color: Color::Yellow,
+        },
+        EpisodeState::Quarantined { .. } => EpStyle {
+            symbol: "!",
+            color: Color::Red,
+        },
+        EpisodeState::Purged { .. } => EpStyle {
+            symbol: "–",
+            color: Color::DarkGray,
+        },
+        EpisodeState::Failed { .. } | EpisodeState::Downloading { .. } => EpStyle {
+            symbol: "↓",
+            color: Color::Blue,
+        },
+        _ => EpStyle {
+            symbol: " ",
+            color: Color::Reset,
+        },
     }
 }
 
@@ -83,13 +107,20 @@ impl State {
     }
 
     fn selected_ep(&self) -> Option<&duralumin_core::Episode> {
-        self.visible.get(self.selected).and_then(|&i| self.all.get(i))
+        self.visible
+            .get(self.selected)
+            .and_then(|&i| self.all.get(i))
     }
 
     fn count_complete(&self) -> usize {
         self.all
             .iter()
-            .filter(|ep| matches!(&ep.state, EpisodeState::Complete { .. } | EpisodeState::Dynamic { .. }))
+            .filter(|ep| {
+                matches!(
+                    &ep.state,
+                    EpisodeState::Complete { .. } | EpisodeState::Dynamic { .. }
+                )
+            })
             .count()
     }
 }
@@ -197,7 +228,11 @@ fn render(f: &mut ratatui::Frame, state: &State) {
     let title = format!(
         " {} — {} episodes (✓ {}/{})",
         trunc(&state.feed_title, 40),
-        if state.filter.is_empty() { total } else { state.visible.len() },
+        if state.filter.is_empty() {
+            total
+        } else {
+            state.visible.len()
+        },
         complete,
         total,
     );
@@ -243,7 +278,10 @@ fn render(f: &mut ratatui::Frame, state: &State) {
             let title_col = format!("{:<width$}", trunc(&ep.title, title_w), width = title_w);
 
             Line::from(vec![
-                Span::styled(format!("{:<3}", sty.symbol), Style::new().fg(sty.color).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{:<3}", sty.symbol),
+                    Style::new().fg(sty.color).add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("  "),
                 Span::raw(title_col),
                 Span::styled(format!("  {:<10}", date), Style::new().fg(Color::DarkGray)),
@@ -306,7 +344,9 @@ fn render_url_popup(
         .and_then(|(cfg, srv)| {
             if cfg.restream {
                 let base = srv.base_url.as_str().trim_end_matches('/');
-                let key = srv.auth_token.as_deref()
+                let key = srv
+                    .auth_token
+                    .as_deref()
                     .map(|t| format!("?key={t}"))
                     .unwrap_or_default();
                 Some(format!("{base}/rss/{}/{}{key}", state.feed_slug, ep.id))
@@ -325,20 +365,20 @@ fn render_url_popup(
         Line::raw(""),
         Line::from(vec![
             Span::styled("  Restream:  ", Style::new().fg(Color::DarkGray)),
-            Span::raw(trunc(&restream, (popup_area.width as usize).saturating_sub(14))),
+            Span::raw(trunc(
+                &restream,
+                (popup_area.width as usize).saturating_sub(14),
+            )),
         ]),
         Line::raw(""),
-        Line::from(vec![
-            Span::styled(
-                "  [c] copy original  [r] copy restream  [esc] close",
-                Style::new().fg(Color::DarkGray),
-            ),
-        ]),
+        Line::from(vec![Span::styled(
+            "  [c] copy original  [r] copy restream  [esc] close",
+            Style::new().fg(Color::DarkGray),
+        )]),
     ];
 
     f.render_widget(
-        Paragraph::new(content)
-            .block(Block::bordered().title(format!(" URLs — {title_line} "))),
+        Paragraph::new(content).block(Block::bordered().title(format!(" URLs — {title_line} "))),
         popup_area,
     );
 }
@@ -355,7 +395,10 @@ fn render_confirm_popup(
         Line::raw(""),
         Line::from(Span::raw(format!("  {}", trunc(&ep.title, 44)))),
         Line::raw(""),
-        Line::from(Span::styled("  The file will be deleted from disk.", Style::new().fg(Color::Yellow))),
+        Line::from(Span::styled(
+            "  The file will be deleted from disk.",
+            Style::new().fg(Color::Yellow),
+        )),
         Line::raw(""),
         Line::from(Span::styled(
             "  [y] confirm delete     [n/esc] cancel",
@@ -364,8 +407,11 @@ fn render_confirm_popup(
     ];
 
     f.render_widget(
-        Paragraph::new(content)
-            .block(Block::bordered().title(" Delete episode file? ").title_alignment(Alignment::Center)),
+        Paragraph::new(content).block(
+            Block::bordered()
+                .title(" Delete episode file? ")
+                .title_alignment(Alignment::Center),
+        ),
         popup_area,
     );
 }
@@ -488,21 +534,20 @@ fn handle_key_popup(
                 }
                 KeyCode::Char('r') => {
                     // Copy restream URL
-                    let url = state
-                        .all
-                        .get(ep_idx)
-                        .and_then(|ep| {
-                            let cfg = state.feed_cfg.as_ref()?;
-                            let srv = state.server_cfg.as_ref()?;
-                            if !cfg.restream {
-                                return None;
-                            }
-                            let base = srv.base_url.as_str().trim_end_matches('/');
-                            let key_sfx = srv.auth_token.as_deref()
-                                .map(|t| format!("?key={t}"))
-                                .unwrap_or_default();
-                            Some(format!("{base}/rss/{}/{}{key_sfx}", state.feed_slug, ep.id))
-                        });
+                    let url = state.all.get(ep_idx).and_then(|ep| {
+                        let cfg = state.feed_cfg.as_ref()?;
+                        let srv = state.server_cfg.as_ref()?;
+                        if !cfg.restream {
+                            return None;
+                        }
+                        let base = srv.base_url.as_str().trim_end_matches('/');
+                        let key_sfx = srv
+                            .auth_token
+                            .as_deref()
+                            .map(|t| format!("?key={t}"))
+                            .unwrap_or_default();
+                        Some(format!("{base}/rss/{}/{}{key_sfx}", state.feed_slug, ep.id))
+                    });
                     match url {
                         Some(u) => state.status = copy_to_clipboard(&u),
                         None => state.status = "Restreaming not configured".to_string(),

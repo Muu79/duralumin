@@ -19,7 +19,11 @@ pub async fn rss_handler(
 ) -> Response {
     let path = state.rss_dir.join(format!("{slug}.xml"));
     if !path.exists() {
-        return (StatusCode::NOT_FOUND, "feed not found or RSS not yet generated").into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            "feed not found or RSS not yet generated",
+        )
+            .into_response();
     }
     // ServeFile handles ETag, Last-Modified, If-None-Match, and Range transparently.
     let svc = ServeFile::new(&path);
@@ -60,18 +64,18 @@ pub async fn audio_handler(
         EpisodeState::Dynamic { path, .. } => Some(path.clone()),
         _ => None,
     };
-    if let Some(path) = local_path {
-        if path.exists() {
-            tracing::debug!(slug, episode_id = episode_id_str, path = %path.display(), "serving local file");
-            let svc = ServeFile::new(&path);
-            return match svc.oneshot(request).await {
-                Ok(resp) => resp.map(Body::new),
-                Err(e) => {
-                    tracing::warn!(error = %e, "local file serve error, falling back to proxy");
-                    proxy(&state, &headers, episode.enclosure_url.as_str()).await
-                }
-            };
-        }
+    if let Some(path) = local_path
+        && path.exists()
+    {
+        tracing::debug!(slug, episode_id = episode_id_str, path = %path.display(), "serving local file");
+        let svc = ServeFile::new(&path);
+        return match svc.oneshot(request).await {
+            Ok(resp) => resp.map(Body::new),
+            Err(e) => {
+                tracing::warn!(error = %e, "local file serve error, falling back to proxy");
+                proxy(&state, &headers, episode.enclosure_url.as_str()).await
+            }
+        };
     }
 
     // Fall back to proxying the origin URL.

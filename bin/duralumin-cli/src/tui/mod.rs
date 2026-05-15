@@ -36,11 +36,7 @@ pub enum Action {
 ///
 /// Returns `Action::Quit` when the user exits normally, or `Action::Sync(slug)`
 /// when the user requests a sync (so the caller can run it then re-call `run`).
-pub async fn run(
-    cfg: &config::Config,
-    db: &Db,
-    initial_slug: Option<String>,
-) -> Result<Action> {
+pub async fn run(cfg: &config::Config, db: &Db, initial_slug: Option<String>) -> Result<Action> {
     let db = db.clone();
     let cfg_feeds: Vec<FeedConfig> = cfg.feeds.clone();
     let server_cfg: Option<ServerConfig> = cfg.server.clone();
@@ -52,12 +48,17 @@ pub async fn run(
 
         match initial_slug {
             Some(slug) => {
-                episode_browser::run(&handle, &db, &cfg_feeds, server_cfg.as_ref(), &mut terminal, &slug)?;
+                episode_browser::run(
+                    &handle,
+                    &db,
+                    &cfg_feeds,
+                    server_cfg.as_ref(),
+                    &mut terminal,
+                    &slug,
+                )?;
                 Ok(Action::Quit)
             }
-            None => {
-                feed_browser::run(&handle, &db, &cfg_feeds, server_cfg.as_ref(), &mut terminal)
-            }
+            None => feed_browser::run(&handle, &db, &cfg_feeds, server_cfg.as_ref(), &mut terminal),
         }
     })
     .await?
@@ -167,14 +168,69 @@ pub fn centered_rect(width: u16, height: u16, outer: Rect) -> Rect {
     }
 }
 
-/// Copy text to the system clipboard. Falls back to printing to stderr with a
-/// notice when no clipboard is available (headless / SSH sessions).
+/// Copy text to the system clipboard.
+///
+/// Cascade:
+///   1. arboard  — works in local GUI environments
+///   2. OSC 52   — terminal escape sequence; works in modern terminals over SSH
+///                 (iTerm2, WezTerm, kitty, foot, xterm, …) — no confirmation
+///                 is possible so we assume success if the write succeeds
+///   3. stderr   — last resort when both above fail
 pub fn copy_to_clipboard(text: &str) -> String {
-    match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(text)) {
-        Ok(_) => "Copied to clipboard".to_string(),
-        Err(_) => {
-            eprintln!("[dura] URL (no clipboard available): {text}");
-            "No clipboard — URL printed to stderr".to_string()
-        }
+    if arboard::Clipboard::new()
+        .and_then(|mut cb| cb.set_text(text))
+        .is_ok()
+    {
+        return "Copied to clipboard".to_string();
     }
+
+    if try_osc52(text) {
+        return "Copied via terminal (OSC 52 — requires compatible terminal)".to_string();
+    }
+
+    eprintln!("[dura] URL: {text}");
+    "No clipboard available — URL printed to stderr".to_string()
+}
+
+/// Write an OSC 52 clipboard escape sequence to the terminal.
+/// Writes to /dev/tty on Unix so the sequence bypasses any stdout buffering
+/// from the TUI.  Returns false if the write itself fails.
+fn try_osc52(text: &str) -> bool {
+    use std::io::Write;
+    let seq = format!("\x1b]52;c;{}\x07", b64(text.as_bytes()));
+
+    #[cfg(unix)]
+    if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+        return tty.write_all(seq.as_bytes()).is_ok();
+    }
+
+    // Non-Unix or /dev/tty unavailable: write directly to stdout.
+    std::io::stdout()
+        .write_all(seq.as_bytes())
+        .and_then(|_| std::io::stdout().flush())
+        .is_ok()
+}
+
+/// Minimal standard base64 encoder (RFC 4648) — avoids adding a crate dep.
+fn b64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+        out.push(T[(b0 >> 2) as usize] as char);
+        out.push(T[(((b0 & 0x3) << 4) | (b1 >> 4)) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            T[(((b1 & 0xF) << 2) | (b2 >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(b2 & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
 }

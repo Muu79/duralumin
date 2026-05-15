@@ -276,14 +276,12 @@ impl Db {
     /// Add an episode to the download queue. Returns `true` if the episode was
     /// newly enqueued; `false` if it was already present (idempotent).
     pub async fn enqueue(&self, episode_id: &EpisodeId, action: Action) -> Result<bool> {
-        let rows = sqlx::query(
-            "INSERT OR IGNORE INTO dl_queue (episode_id, action) VALUES (?, ?)",
-        )
-        .bind(episode_id.as_str())
-        .bind(action.to_string())
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
+        let rows = sqlx::query("INSERT OR IGNORE INTO dl_queue (episode_id, action) VALUES (?, ?)")
+            .bind(episode_id.as_str())
+            .bind(action.to_string())
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
         Ok(rows > 0)
     }
 
@@ -311,12 +309,10 @@ impl Db {
 
     /// Return all `Dynamic`-state episodes for a feed (used by the purge cycle).
     pub async fn list_dynamic_episodes(&self, feed_id: FeedId) -> Result<Vec<Episode>> {
-        let rows = sqlx::query(
-            "SELECT * FROM episodes WHERE feed_id = ? ORDER BY pub_date DESC",
-        )
-        .bind(feed_id.0)
-        .fetch_all(&self.pool)
-        .await?;
+        let rows = sqlx::query("SELECT * FROM episodes WHERE feed_id = ? ORDER BY pub_date DESC")
+            .bind(feed_id.0)
+            .fetch_all(&self.pool)
+            .await?;
         rows.iter()
             .map(row_to_episode)
             .collect::<Result<Vec<_>>>()
