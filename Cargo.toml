@@ -72,8 +72,13 @@ tower      = "0.5"
 tower-http = { version = "0.6", features = ["fs"] }
 
 # CLI output
-comfy-table = "7"
+comfy-table = {version = "7", features = ["custom_styling"]}
 owo-colors  = "4"
+
+# TUI
+ratatui   = { version = "0.30", features = ["crossterm"] }
+crossterm = "0.29"
+arboard   = "3"
 
 # The profile that 'dist' will build with
 [profile.dist]

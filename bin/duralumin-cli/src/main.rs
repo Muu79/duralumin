@@ -1,6 +1,7 @@
 mod config;
 mod rss_gen;
 mod sync;
+mod tui;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,7 +11,7 @@ use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use comfy_table::{Cell, Color, ContentArrangement, Table, presets::UTF8_FULL_CONDENSED};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize};
 use tokio::sync::Semaphore;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -50,8 +51,25 @@ struct Cli {
     log_format: Option<LogFormat>,
     #[arg(long, global = true)]
     log_level: Option<String>,
+    /// Force interactive (TUI) output even when stdout is not a terminal.
+    #[arg(long, short = 'i', global = true)]
+    interactive: bool,
+    /// Force plain-text output even when stdout is a terminal (e.g. for scripts).
+    #[arg(long, global = true)]
+    no_interactive: bool,
     #[command(subcommand)]
     command: Command,
+}
+
+fn is_interactive(cli: &Cli) -> bool {
+    use std::io::IsTerminal;
+    if cli.no_interactive {
+        false
+    } else if cli.interactive {
+        true
+    } else {
+        std::io::stdout().is_terminal()
+    }
 }
 
 #[derive(Clone, ValueEnum)]
@@ -373,7 +391,8 @@ async fn main() {
         Err(e) => tracing::warn!(error = %e, "could not count quarantined episodes"),
     }
 
-    if let Err(e) = run(cli.command, &cfg, &db).await {
+    let interactive = is_interactive(&cli);
+    if let Err(e) = run(cli.command, &cfg, &db, interactive).await {
         eprintln!("Error: {e:#}");
         std::process::exit(1);
     }
@@ -398,11 +417,13 @@ fn resolve_slug(cfg: &config::Config, input: &str) -> String {
 
 // ---- Command dispatch ------------------------------------------------------
 
-async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
+async fn run(command: Command, cfg: &config::Config, db: &Db, interactive: bool) -> Result<()> {
     match command {
         Command::Feed(FeedArgs { sub }) => match sub {
-            FeedSub::List => cmd_feed_list(cfg, db).await,
-            FeedSub::Info { slug } => cmd_feed_info(cfg, db, &resolve_slug(cfg, &slug)).await,
+            FeedSub::List => cmd_feed_list(cfg, db, interactive).await,
+            FeedSub::Info { slug } => {
+                cmd_feed_info(cfg, db, &resolve_slug(cfg, &slug), interactive).await
+            }
             FeedSub::Reimport { slug } => {
                 let resolved = slug.as_deref().map(|s| resolve_slug(cfg, s));
                 cmd_feed_reimport(cfg, db, resolved.as_deref()).await
@@ -507,7 +528,28 @@ async fn cmd_sync(cfg: &config::Config, db: &Db, args: SyncArgs) -> Result<()> {
 
 // ---- feed list -------------------------------------------------------------
 
-async fn cmd_feed_list(cfg: &config::Config, db: &Db) -> Result<()> {
+async fn cmd_feed_list(cfg: &config::Config, db: &Db, interactive: bool) -> Result<()> {
+    if interactive {
+        let engine = build_engine(cfg, db).await?;
+        let fetcher = FeedFetcher::new(
+            &cfg.downloader.user_agent,
+            cfg.downloader.accept_invalid_certs,
+        );
+        loop {
+            match tui::run(cfg, db, None).await? {
+                tui::Action::Quit => break,
+                tui::Action::Sync(slug) => {
+                    let feed_cfg = cfg.feeds.iter().find(|f| f.slug == slug);
+                    if let Some(fc) = feed_cfg {
+                        eprintln!("Syncing {}…", slug);
+                        sync::sync_one_feed(fc, db, &engine, &fetcher, false).await;
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
     let feeds = db.list_feeds().await?;
     if feeds.is_empty() {
         println!("{}", "No feeds in database.".dimmed());
@@ -520,7 +562,6 @@ async fn cmd_feed_list(cfg: &config::Config, db: &Db) -> Result<()> {
             .last_fetched_at
             .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_else(|| "never".into());
-        // Display name: config display_name > RSS title > "—"
         let name = cfg
             .feeds
             .iter()
@@ -988,7 +1029,7 @@ async fn cmd_status(cfg: &config::Config, db: &Db) -> Result<()> {
     }
 
     let mut table = make_table();
-    table.set_header(["FEED", "TOTAL", "DL", "QUEUED", "SKIP", "QUAR"]);
+    table.set_header(["FEED", "TOTAL", "DL(DYN)", "QUEUED", "SKIP", "QUAR"]);
 
     for feed in &feeds {
         let eps = db
@@ -1020,7 +1061,7 @@ async fn cmd_status(cfg: &config::Config, db: &Db) -> Result<()> {
         table.add_row([
             Cell::new(name),
             Cell::new(eps.len()),
-            Cell::new(c.dl).fg(Color::Green),
+            Cell::new(format!("{}({})", c.dl.green(), c.dynamic.blue())),
             queued_cell,
             Cell::new(c.skipped).fg(Color::DarkGrey),
             quar_cell,
@@ -1032,7 +1073,12 @@ async fn cmd_status(cfg: &config::Config, db: &Db) -> Result<()> {
 
 // ---- feed info -------------------------------------------------------------
 
-async fn cmd_feed_info(cfg: &config::Config, db: &Db, slug: &str) -> Result<()> {
+async fn cmd_feed_info(cfg: &config::Config, db: &Db, slug: &str, interactive: bool) -> Result<()> {
+    if interactive {
+        tui::run(cfg, db, Some(slug.to_string())).await?;
+        return Ok(());
+    }
+
     let feed = db
         .get_feed_by_slug(slug)
         .await?
@@ -1531,6 +1577,7 @@ fn is_running(pid: u32) -> bool {
 #[derive(Default)]
 struct EpisodeCounts {
     dl: usize,
+    dynamic: usize,
     queued: usize,
     skipped: usize,
     quarantined: usize,
@@ -1542,14 +1589,21 @@ impl EpisodeCounts {
         let mut c = Self::default();
         for ep in episodes {
             match &ep.state {
-                EpisodeState::Complete { path, .. } |
-                EpisodeState::Dynamic { path, .. } => {
+                EpisodeState::Complete { path, .. } => {
                     if path.exists() {
                         c.dl += 1;
                     } else {
                         c.missing += 1;
                     }
-                }
+                },
+                EpisodeState::Dynamic { path, .. } => {
+                    if path.exists() {
+                        c.dl += 1;
+                        c.dynamic += 1;
+                    } else {
+                        c.missing += 1;
+                    }
+                },
                 EpisodeState::Matched(Action::Download | Action::Dynamic) | EpisodeState::Failed { .. } => {
                     c.queued += 1
                 }

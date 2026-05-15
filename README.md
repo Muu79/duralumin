@@ -148,14 +148,68 @@ match.kind  = "duration_max"
 match.value = "5m"
 ```
 
+## Interactive mode
+
+When stdout is a terminal (interactive shell or SSH session), `dura feed list`
+and `dura feed info` automatically launch a keyboard-navigable TUI. When run
+from cron, systemd, or a script (stdout is not a TTY) the familiar table output
+is used instead — no flag required.
+
+Override with global flags:
+
+```bash
+dura --no-interactive feed list   # always plain text
+dura -i feed list                 # force TUI even in a pipe
+```
+
+### Feed browser (`dura feed list`)
+
+```
+┌─ Feeds (3) ───────────────────────────────────────────────┐
+│ > ◉ My Favourite Podcast           2h ago                  │
+│   ◉ News Briefing                  5m ago                  │
+│     Tech Show                      never                   │
+└───────────────────────────────────────────────────────────┘
+  ↑↓/jk navigate  enter open  c copy URL  r sync  q quit
+```
+
+`◉` marks restream-enabled feeds. Press `r` to sync the selected feed
+(TUI suspends, sync output appears, TUI resumes).
+
+### Episode browser (`enter` from feed browser, or `dura feed info <slug>`)
+
+```
+ My Favourite Podcast — 142 episodes (✓ 38/142)
+ / Filter: ▌                 (esc to clear)
+┌───────────────────────────────────────────────────────────┐
+│ ✓   C2 E47: Gangs of Neo Galaderon Pt2  2026-05-01  82 MB │
+│ ✓   C2 E46: Gangs of Neo Galaderon Pt1  2026-04-24  79 MB │
+│ –   Bonus: NaddPod Live at PAX          2026-04-10  110 MB│
+│ ↓   C2 E45: The Reckoning               2026-03-28  75 MB │
+└───────────────────────────────────────────────────────────┘
+  ↑↓/jk nav  / filter  d download  s skip  x del+skip  u URLs  q back
+```
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` or `j` / `k` | Navigate |
+| `/` | Enter filter mode (live title search) |
+| `d` | Queue episode for download |
+| `s` | Mark as skipped |
+| `x` | Delete file from disk + mark skipped (asks for confirmation) |
+| `u` / `Enter` | Show URL popup (original + restream URL, `c`/`r` to copy) |
+| `q` / `Esc` | Back |
+
+Status symbols: `✓` downloaded · `↓` queued · `–` skipped · `?` discovered · `!` quarantined
+
 ## Commands
 
 ### Everyday usage
 
 ```bash
 dura status                     # overview of all feeds: counts by state
-dura feed list                  # feeds and last-sync time
-dura feed info <slug>           # detailed view: metadata + recent episodes
+dura feed list                  # feeds browser (TUI) or table (non-TTY)
+dura feed info <slug>           # episode browser (TUI) or detail table (non-TTY)
 dura episode list               # recent episodes across all feeds
 dura episode list --feed <slug> # episodes for one feed
 dura episode list --state complete
