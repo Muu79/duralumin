@@ -2,7 +2,18 @@ use duralumin_core::{Episode, Feed};
 
 use crate::ServerConfig;
 
-pub fn build_rss(feed: &Feed, episodes: &[Episode], config: &ServerConfig, slug: &str) -> String {
+/// Build an RSS feed XML string.
+///
+/// `cover_url` overrides `feed.image_url` for the channel image elements.
+/// Pass the local cached image URL here when available; falls back to the
+/// upstream URL from the feed if `None`.
+pub fn build_rss(
+    feed: &Feed,
+    episodes: &[Episode],
+    config: &ServerConfig,
+    slug: &str,
+    cover_url: Option<&str>,
+) -> String {
     let title = esc(feed.title.as_deref().unwrap_or(slug));
     // Append ?key=<token> to every server URL so podcast apps can authenticate
     // audio fetches without re-sending the RSS auth header.
@@ -26,16 +37,16 @@ pub fn build_rss(feed: &Feed, episodes: &[Episode], config: &ServerConfig, slug:
     out.push_str(&format!("  <link>{}</link>\n", esc(&feed_url)));
     out.push_str(&format!("  <description>{title}</description>\n"));
 
-    if let Some(img) = &feed.image_url {
+    let img_str = cover_url
+        .map(|s| s.to_owned())
+        .or_else(|| feed.image_url.as_ref().map(|u| u.as_str().to_owned()));
+    if let Some(img) = img_str {
         out.push_str("  <image>\n");
-        out.push_str(&format!("    <url>{}</url>\n", esc(img.as_str())));
+        out.push_str(&format!("    <url>{}</url>\n", esc(&img)));
         out.push_str(&format!("    <title>{title}</title>\n"));
         out.push_str(&format!("    <link>{}</link>\n", esc(&feed_url)));
         out.push_str("  </image>\n");
-        out.push_str(&format!(
-            "  <itunes:image href=\"{}\"/>\n",
-            esc(img.as_str())
-        ));
+        out.push_str(&format!("  <itunes:image href=\"{}\"/>\n", esc(&img)));
     }
 
     for ep in episodes {

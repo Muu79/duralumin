@@ -236,6 +236,10 @@ impl Db {
                 Some(path.to_string_lossy().into_owned()),
                 Some(sha256.clone()),
             ),
+            EpisodeState::Dynamic { path, sha256, .. } => (
+                Some(path.to_string_lossy().into_owned()),
+                Some(sha256.clone()),
+            ),
             _ => (None, None),
         };
         sqlx::query("UPDATE episodes SET state = ?, file_path = ?, sha256 = ? WHERE id = ?")
@@ -267,42 +271,68 @@ impl Db {
         Ok(episodes)
     }
 
-    /// Return all episodes that should be processed by the downloader:
-    /// - `Matched(Download)` — ready for first attempt
-    /// - `Failed { attempts }` where `attempts < max_retries` — eligible for retry
-    ///
-    /// Results are ordered oldest-first so the queue drains in publication order.
-    pub async fn download_queue(&self, max_retries: u8) -> Result<Vec<Episode>> {
-        let rows = sqlx::query("SELECT * FROM episodes ORDER BY pub_date ASC")
-            .fetch_all(&self.pool)
-            .await?;
-        let episodes: Vec<Episode> = rows.iter().map(row_to_episode).collect::<Result<_>>()?;
-        Ok(episodes
-            .into_iter()
-            .filter(|ep| match &ep.state {
-                EpisodeState::Matched(Action::Download) => true,
-                EpisodeState::Failed { attempts, .. } => *attempts < max_retries,
-                _ => false,
-            })
-            .collect())
+    // ---- Download queue --------------------------------------------------------
+
+    /// Add an episode to the download queue. Returns `true` if the episode was
+    /// newly enqueued; `false` if it was already present (idempotent).
+    pub async fn enqueue(&self, episode_id: &EpisodeId, action: Action) -> Result<bool> {
+        let rows = sqlx::query("INSERT OR IGNORE INTO dl_queue (episode_id, action) VALUES (?, ?)")
+            .bind(episode_id.as_str())
+            .bind(action.to_string())
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        Ok(rows > 0)
     }
 
-    /// Count episodes currently in the Quarantined state.
-    pub async fn count_quarantined(&self) -> Result<usize> {
-        let rows = sqlx::query("SELECT state FROM episodes")
+    /// Remove an episode from the download queue. No-op if not present.
+    pub async fn dequeue(&self, episode_id: &EpisodeId) -> Result<()> {
+        sqlx::query("DELETE FROM dl_queue WHERE episode_id = ?")
+            .bind(episode_id.as_str())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Return all queued episodes joined with their episode rows, ordered by
+    /// enqueue time (oldest first) so the queue drains in arrival order.
+    pub async fn get_queue(&self) -> Result<Vec<Episode>> {
+        let rows = sqlx::query(
+            "SELECT e.* FROM episodes e
+             JOIN dl_queue q ON q.episode_id = e.id
+             ORDER BY q.added_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_episode).collect()
+    }
+
+    /// Return all `Dynamic`-state episodes for a feed (used by the purge cycle).
+    pub async fn list_dynamic_episodes(&self, feed_id: FeedId) -> Result<Vec<Episode>> {
+        let rows = sqlx::query("SELECT * FROM episodes WHERE feed_id = ? ORDER BY pub_date DESC")
+            .bind(feed_id.0)
             .fetch_all(&self.pool)
             .await?;
-        let count = rows
-            .iter()
-            .filter(|row| {
-                row.try_get::<String, _>("state")
-                    .ok()
-                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                    .map(|v| v.get("Quarantined").is_some())
-                    .unwrap_or(false)
+        rows.iter()
+            .map(row_to_episode)
+            .collect::<Result<Vec<_>>>()
+            .map(|eps| {
+                eps.into_iter()
+                    .filter(|ep| matches!(ep.state, EpisodeState::Dynamic { .. }))
+                    .collect()
             })
-            .count();
-        Ok(count)
+    }
+
+    /// Count episodes currently in the Quarantined state (used at startup).
+    pub async fn count_quarantined(&self) -> Result<usize> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) as n FROM episodes
+             WHERE json_extract(state, '$.Quarantined') IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        let n: i64 = row.try_get("n")?;
+        Ok(n as usize)
     }
 
     // ---- Attempt operations ----------------------------------------------------
@@ -393,6 +423,7 @@ fn row_to_episode(row: &SqliteRow) -> Result<Episode> {
         // Swallow URL parse errors for image_url — a bad art URL shouldn't
         // surface as a storage failure.
         image_url: image_url_str.as_deref().and_then(|s| Url::parse(s).ok()),
+        episode_no: 0, // episode_no is not persisted; it's only used transiently during feed parsing
     })
 }
 

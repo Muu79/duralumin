@@ -34,6 +34,15 @@ backoff_base = "30s"
 # generic agents.
 user_agent = "duralumin/0.1 (+https://github.com/yourname/duralumin)"
 
+# Per-download bandwidth cap in bytes per second. 0 = uncapped (default).
+# Useful on metered or shared connections. This is a per-download cap, not an
+# aggregate: with concurrent_downloads = 2 and max_bytes_per_sec = 500000,
+# total throughput is capped at ~1 MB/s.
+# Examples: 102400 = 100 KB/s  |  524288 = 512 KB/s  |  1048576 = 1 MB/s
+# Note: if rate limiting, ensure attempt_timeout is long enough to complete the
+# largest episode at the chosen rate (500 MB at 100 KB/s needs ~87 min).
+# max_bytes_per_sec = 0
+
 
 # --- Defaults -----------------------------------------------------------------
 
@@ -82,6 +91,17 @@ level = "info"
 # the same sub-table path across multiple array elements, so the header form
 # breaks as soon as a feed or global_rules section has more than one rule.
 
+# --- Global dynamic rules -----------------------------------------------------
+# Applied across all feeds before per-feed static rules.
+# Useful for a sitewide "keep the last 2 weeks" policy.
+# Per-feed [[feeds.dynamic]] blocks are evaluated first and take precedence.
+
+# [[global_dynamics]]
+# name           = "rolling-2-week-window"
+# match.kind     = "duration_ago"
+# match.duration = "14d"
+
+
 # --- Global rules -------------------------------------------------------------
 # Applied after per-feed rules. Useful for cross-feed policies.
 
@@ -126,6 +146,11 @@ match.value   = "500 MB"
 # --- Feeds --------------------------------------------------------------------
 # Each [[feeds]] block is one RSS/Atom feed.
 # slug          — filesystem-safe identifier; used in log output. Must be unique.
+# display_name  — optional human-readable label shown in CLI output.
+#                 Falls back to the RSS feed title, then the slug.
+# aliases       — optional list of alternative identifiers accepted by slug-typed
+#                 CLI arguments (e.g. `dura feed info <alias>`). Must be globally
+#                 unique across all slugs and aliases.
 # poll_interval — how often `dura start` re-checks this feed.
 #                 Not used when running via cron/systemd timer (use `dura sync` there).
 # restream      — expose this feed through the RSS restream server (default: false).
@@ -137,14 +162,40 @@ match.value   = "500 MB"
 [[feeds]]
 url           = "https://feeds.example.com/my-favourite-podcast.rss"
 slug          = "my-favourite-podcast"
+display_name  = "My Favourite Podcast"   # shown in `dura status` and `dura feed list`
+aliases       = ["mfp", "favourite"]     # `dura feed info mfp` resolves to this feed
 poll_interval = "1h"
 restream      = true   # expose via <base_url>/rss/my-favourite-podcast
+# restream_only_matched = true   # (default) only Complete, Dynamic, and queued episodes appear
+                                 # in the restreamed feed — set false to include all episodes
+                                 # and proxy audio for those not yet downloaded
 
 [[feeds.rules]]
 name          = "download-all"
 priority      = 0
 action        = "download"
 match.kind    = "always"
+
+# Dynamic windows keep the N most recent (or most recently published) episodes
+# downloaded and delete the rest automatically on each sync cycle.
+# A dynamic episode's file is kept while it's in the window, then deleted when
+# it falls out.  If a static rule also matches the episode (e.g. "download-all"
+# above), it gets promoted to a permanent Complete download instead of being purged.
+#
+# Two kinds:
+#   last_n_episodes  — keep the N episodes newest by feed position
+#   duration_ago     — keep episodes published within a rolling time window
+#
+# Only one dynamic rule needs to match for the episode to be kept.
+[[feeds.dynamic]]
+name           = "keep-10-most-recent"
+match.kind     = "last_n_episodes"
+match.last_n_episodes = 10
+
+# [[feeds.dynamic]]
+# name           = "keep-last-2-weeks"
+# match.kind     = "duration_ago"
+# match.duration = "14d"
 
 
 # --- Feed: only recent episodes ------------------------------------------------

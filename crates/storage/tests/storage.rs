@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use chrono::{TimeZone, Utc};
-use duralumin_core::{Action, Episode, EpisodeId, EpisodeState, Feed, FeedId};
+use duralumin_core::Action;
+use duralumin_core::{Episode, EpisodeId, EpisodeState, Feed, FeedId};
 use duralumin_storage::{Db, EpisodeFilter};
 use url::Url;
 
@@ -37,6 +38,7 @@ fn make_episode(feed_id: FeedId, guid: &str) -> Episode {
         enclosure_mime: Some("audio/mpeg".into()),
         state: EpisodeState::Discovered,
         image_url: None,
+        episode_no: 0,
     }
 }
 
@@ -181,72 +183,98 @@ async fn episode_state_json_round_trips() {
 // ---- Download queue --------------------------------------------------------
 
 #[tokio::test]
-async fn download_queue_returns_matched_episodes() {
+async fn enqueue_is_idempotent() {
     let db = open_mem_db().await;
     let feed_id = db
         .upsert_feed(&make_feed("https://example.com/rss", "queue"))
         .await
         .unwrap();
+    let ep = make_episode(feed_id, "q1");
+    db.upsert_episode(&ep).await.unwrap();
 
-    let ep1 = make_episode(feed_id, "q1");
-    let ep2 = make_episode(feed_id, "q2");
-    let ep3 = make_episode(feed_id, "q3");
+    let first = db.enqueue(&ep.id, Action::Download).await.unwrap();
+    assert!(first, "first enqueue should return true");
+
+    let second = db.enqueue(&ep.id, Action::Download).await.unwrap();
+    assert!(!second, "duplicate enqueue should return false");
+
+    let queue = db.get_queue().await.unwrap();
+    assert_eq!(queue.len(), 1);
+}
+
+#[tokio::test]
+async fn dequeue_removes_entry() {
+    let db = open_mem_db().await;
+    let feed_id = db
+        .upsert_feed(&make_feed("https://example.com/rss", "dequeue"))
+        .await
+        .unwrap();
+    let ep = make_episode(feed_id, "dq1");
+    db.upsert_episode(&ep).await.unwrap();
+    db.enqueue(&ep.id, Action::Download).await.unwrap();
+
+    db.dequeue(&ep.id).await.unwrap();
+    let queue = db.get_queue().await.unwrap();
+    assert!(queue.is_empty());
+}
+
+#[tokio::test]
+async fn dequeue_is_noop_when_not_queued() {
+    let db = open_mem_db().await;
+    let feed_id = db
+        .upsert_feed(&make_feed("https://example.com/rss", "noop"))
+        .await
+        .unwrap();
+    let ep = make_episode(feed_id, "nq1");
+    db.upsert_episode(&ep).await.unwrap();
+
+    // Should not error even though ep was never enqueued.
+    db.dequeue(&ep.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn get_queue_returns_enqueued_episodes_in_order() {
+    let db = open_mem_db().await;
+    let feed_id = db
+        .upsert_feed(&make_feed("https://example.com/rss", "order"))
+        .await
+        .unwrap();
+
+    let ep1 = make_episode(feed_id, "o1");
+    let ep2 = make_episode(feed_id, "o2");
+    let ep3 = make_episode(feed_id, "o3");
 
     db.upsert_episode(&ep1).await.unwrap();
     db.upsert_episode(&ep2).await.unwrap();
     db.upsert_episode(&ep3).await.unwrap();
 
-    // Only ep1 is Matched(Download)
-    db.update_episode_state(&ep1.id, &EpisodeState::Matched(Action::Download))
-        .await
-        .unwrap();
-    // ep2 is Matched(Skip) — not in queue
-    db.update_episode_state(&ep2.id, &EpisodeState::Matched(Action::Skip))
-        .await
-        .unwrap();
-    // ep3 stays Discovered — not in queue
+    // Enqueue only ep1 and ep3
+    db.enqueue(&ep1.id, Action::Download).await.unwrap();
+    db.enqueue(&ep3.id, Action::Dynamic).await.unwrap();
 
-    let queue = db.download_queue(3).await.unwrap();
-    assert_eq!(queue.len(), 1);
+    let queue = db.get_queue().await.unwrap();
+    assert_eq!(queue.len(), 2);
     assert_eq!(queue[0].id, ep1.id);
+    assert_eq!(queue[1].id, ep3.id);
 }
 
 #[tokio::test]
-async fn download_queue_includes_retryable_failed() {
+async fn cascade_delete_clears_queue_entry() {
     let db = open_mem_db().await;
     let feed_id = db
-        .upsert_feed(&make_feed("https://example.com/rss", "retry"))
+        .upsert_feed(&make_feed("https://example.com/rss", "cascade"))
         .await
         .unwrap();
-    let ep = make_episode(feed_id, "retry-ep");
+    let ep = make_episode(feed_id, "cas1");
     db.upsert_episode(&ep).await.unwrap();
+    db.enqueue(&ep.id, Action::Download).await.unwrap();
 
-    // 1 attempt failed — max_retries = 3 → still retryable
-    db.update_episode_state(
-        &ep.id,
-        &EpisodeState::Failed {
-            last_error: "timeout".into(),
-            attempts: 1,
-        },
-    )
-    .await
-    .unwrap();
-
-    let queue = db.download_queue(3).await.unwrap();
-    assert_eq!(queue.len(), 1);
-
-    // Bump to 3 attempts — max_retries = 3 → no longer retryable
-    db.update_episode_state(
-        &ep.id,
-        &EpisodeState::Failed {
-            last_error: "timeout".into(),
-            attempts: 3,
-        },
-    )
-    .await
-    .unwrap();
-    let queue = db.download_queue(3).await.unwrap();
-    assert_eq!(queue.len(), 0);
+    db.delete_episode(&ep.id).await.unwrap();
+    let queue = db.get_queue().await.unwrap();
+    assert!(
+        queue.is_empty(),
+        "queue entry should cascade-delete with episode"
+    );
 }
 
 // ---- Episode list filter ---------------------------------------------------
