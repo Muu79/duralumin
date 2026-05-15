@@ -21,6 +21,7 @@ pub struct Episode {
     pub state: EpisodeState,
     /// Per-episode cover art URL from `<itunes:image>`, if present.
     pub image_url: Option<Url>,
+    pub episode_no: usize,
 }
 
 impl Episode {
@@ -42,6 +43,11 @@ pub enum EpisodeState {
         downloaded_at: DateTime<Utc>,
         sha256: String,
     },
+    Dynamic {
+        path: PathBuf,
+        downloaded_at: DateTime<Utc>,
+        sha256: String,
+    },
     Failed {
         last_error: String,
         attempts: u8,
@@ -49,6 +55,9 @@ pub enum EpisodeState {
     Quarantined {
         reason: String,
         last_error: String,
+    },
+    Purged {
+        purged_at: DateTime<Utc>,
     },
 }
 
@@ -60,15 +69,20 @@ impl EpisodeState {
             Self::Matched(_) => "matched",
             Self::Downloading { .. } => "downloading",
             Self::Complete { .. } => "complete",
+            Self::Dynamic { .. } => "dynamic",
             Self::Failed { .. } => "failed",
             Self::Quarantined { .. } => "quarantined",
+            Self::Purged { .. } => "purged",
         }
     }
 
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            Self::Complete { .. } | Self::Quarantined { .. } | Self::Matched(Action::Skip)
+            Self::Complete { .. }
+                | Self::Quarantined { .. }
+                | Self::Matched(Action::Skip)
+                | Self::Purged { .. }
         )
     }
 }
@@ -79,27 +93,39 @@ impl std::fmt::Display for EpisodeState {
             Self::Discovered => write!(f, "discovered"),
             Self::Matched(a) => write!(f, "matched ({a})"),
             Self::Downloading { attempt, .. } => write!(f, "downloading (attempt {attempt})"),
+            Self::Dynamic { path, .. } => write!(f, "dynamic → {}", path.display()),
             Self::Complete { path, .. } => write!(f, "complete → {}", path.display()),
             Self::Failed { attempts, .. } => write!(f, "failed ({attempts} attempt(s))"),
             Self::Quarantined { reason, .. } => write!(f, "quarantined: {reason}"),
+            Self::Purged { purged_at } => write!(f, "purged ({purged_at})"),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
     Download,
+    Dynamic,
     Skip,
+    Purge,
     Archive,
     Quarantine,
+}
+
+impl Default for Action {
+    fn default() -> Self {
+        Action::Download
+    }
 }
 
 impl std::fmt::Display for Action {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Download => "download",
+            Self::Dynamic => "dynamic",
             Self::Skip => "skip",
+            Self::Purge => "purge",
             Self::Archive => "archive",
             Self::Quarantine => "quarantine",
         })

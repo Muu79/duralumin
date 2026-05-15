@@ -119,7 +119,8 @@ impl FeedFetcher {
         let episodes: Vec<Episode> = parsed
             .entries
             .iter()
-            .filter_map(|entry| entry_to_episode(entry, feed))
+            .enumerate()
+            .filter_map(|(i, entry)| entry_to_episode(entry, feed, i))
             .collect();
 
         tracing::info!(
@@ -145,7 +146,8 @@ pub fn parse_bytes(bytes: &[u8], feed: &Feed) -> Result<Vec<Episode>> {
     let episodes = parsed
         .entries
         .iter()
-        .filter_map(|entry| entry_to_episode(entry, feed))
+        .enumerate()
+        .filter_map(|(i, entry)| entry_to_episode(entry, feed, i))
         .collect();
 
     Ok(episodes)
@@ -153,7 +155,11 @@ pub fn parse_bytes(bytes: &[u8], feed: &Feed) -> Result<Vec<Episode>> {
 
 // ---- Entry → Episode mapping -----------------------------------------------
 
-fn entry_to_episode(entry: &feed_rs::model::Entry, feed: &Feed) -> Option<Episode> {
+fn entry_to_episode(
+    entry: &feed_rs::model::Entry,
+    feed: &Feed,
+    episode_no: usize,
+) -> Option<Episode> {
     // Enclosure is required — skip without one
     let (enc_url, enc_size, enc_mime) = match extract_enclosure(entry) {
         Some(e) => e,
@@ -226,6 +232,7 @@ fn entry_to_episode(entry: &feed_rs::model::Entry, feed: &Feed) -> Option<Episod
         enclosure_mime: enc_mime,
         state: EpisodeState::Discovered,
         image_url,
+        episode_no,
     })
 }
 

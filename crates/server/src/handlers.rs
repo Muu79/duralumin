@@ -7,57 +7,34 @@ use axum::{
 use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
-use duralumin_core::{Action, EpisodeId, EpisodeState};
-use duralumin_storage::EpisodeFilter;
+use duralumin_core::EpisodeState;
 
-use crate::{AppState, auth::AuthGuard, rss};
+use crate::{AppState, auth::AuthGuard};
 
 pub async fn rss_handler(
     _auth: AuthGuard,
     Path(slug): Path<String>,
     State(state): State<AppState>,
+    request: Request<Body>,
 ) -> Response {
-    let feed = match state.db.get_feed_by_slug(&slug).await {
-        Ok(Some(f)) => f,
-        Ok(None) => return (StatusCode::NOT_FOUND, "feed not found").into_response(),
-        Err(e) => {
-            tracing::error!(slug, error = %e, "db error fetching feed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    let path = state.rss_dir.join(format!("{slug}.xml"));
+    if !path.exists() {
+        return (StatusCode::NOT_FOUND, "feed not found or RSS not yet generated").into_response();
+    }
+    // ServeFile handles ETag, Last-Modified, If-None-Match, and Range transparently.
+    let svc = ServeFile::new(&path);
+    match svc.oneshot(request).await {
+        Ok(resp) => {
+            // Override MIME — tower-http may use application/xml for .xml files.
+            let (mut parts, body) = resp.into_parts();
+            parts.headers.insert(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("text/xml; charset=utf-8"),
+            );
+            Response::from_parts(parts, Body::new(body))
         }
-    };
-
-    let filter = EpisodeFilter {
-        feed_id: Some(feed.id),
-        ..Default::default()
-    };
-    let episodes = match state.db.list_episodes(filter).await {
-        Ok(eps) => eps,
-        Err(e) => {
-            tracing::error!(slug, error = %e, "db error listing episodes");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-    };
-
-    // Only expose downloaded or queued episodes. Skipped, Discovered, and
-    // Quarantined episodes are not meaningful to a podcast app.
-    let episodes: Vec<_> = episodes
-        .into_iter()
-        .filter(|ep| {
-            matches!(
-                &ep.state,
-                EpisodeState::Complete { .. } | EpisodeState::Matched(Action::Download)
-            )
-        })
-        .collect();
-
-    let xml = rss::build_rss(&feed, &episodes, &state.config, &slug);
-    tracing::debug!(slug, episodes = episodes.len(), "served RSS feed");
-
-    (
-        [(axum::http::header::CONTENT_TYPE, "text/xml; charset=utf-8")],
-        xml,
-    )
-        .into_response()
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 pub async fn audio_handler(
@@ -67,7 +44,7 @@ pub async fn audio_handler(
     headers: HeaderMap,
     request: Request<Body>,
 ) -> Response {
-    let eid = EpisodeId::from(episode_id_str.clone());
+    let eid = duralumin_core::EpisodeId::from(episode_id_str.clone());
     let episode = match state.db.get_episode(&eid).await {
         Ok(Some(ep)) => ep,
         Ok(None) => return (StatusCode::NOT_FOUND, "episode not found").into_response(),
@@ -77,24 +54,46 @@ pub async fn audio_handler(
         }
     };
 
-    // Serve local file if downloaded
-    if let EpisodeState::Complete { path, .. } = &episode.state
-        && path.exists()
-    {
-        tracing::debug!(slug, episode_id = episode_id_str, path = %path.display(), "serving local file");
-        let svc = ServeFile::new(path);
-        return match svc.oneshot(request).await {
-            Ok(resp) => resp.map(Body::new),
-            Err(e) => {
-                tracing::warn!(error = %e, "local file serve error, falling back to proxy");
-                proxy(&state, &headers, episode.enclosure_url.as_str()).await
-            }
-        };
+    // Serve local file for Complete and Dynamic (both have a file on disk).
+    let local_path = match &episode.state {
+        EpisodeState::Complete { path, .. } => Some(path.clone()),
+        EpisodeState::Dynamic { path, .. } => Some(path.clone()),
+        _ => None,
+    };
+    if let Some(path) = local_path {
+        if path.exists() {
+            tracing::debug!(slug, episode_id = episode_id_str, path = %path.display(), "serving local file");
+            let svc = ServeFile::new(&path);
+            return match svc.oneshot(request).await {
+                Ok(resp) => resp.map(Body::new),
+                Err(e) => {
+                    tracing::warn!(error = %e, "local file serve error, falling back to proxy");
+                    proxy(&state, &headers, episode.enclosure_url.as_str()).await
+                }
+            };
+        }
     }
 
-    // Fall back to proxying the origin URL
+    // Fall back to proxying the origin URL.
     tracing::debug!(slug, episode_id = episode_id_str, url = %episode.enclosure_url, "proxying to origin");
     proxy(&state, &headers, episode.enclosure_url.as_str()).await
+}
+
+pub async fn images_handler(
+    _auth: AuthGuard,
+    Path((slug, filename)): Path<(String, String)>,
+    State(state): State<AppState>,
+    request: Request<Body>,
+) -> Response {
+    let path = state.images_dir.join(&slug).join(&filename);
+    if !path.exists() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let svc = ServeFile::new(&path);
+    match svc.oneshot(request).await {
+        Ok(resp) => resp.map(Body::new),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 async fn proxy(state: &AppState, headers: &HeaderMap, url: &str) -> Response {
@@ -117,7 +116,6 @@ async fn proxy(state: &AppState, headers: &HeaderMap, url: &str) -> Response {
 
     let mut response = Response::new(Body::from_stream(stream));
     *response.status_mut() = status;
-    // Forward useful headers from origin (Content-Type, Content-Length, Accept-Ranges, Content-Range)
     for key in &[
         "Content-Type",
         "Content-Length",

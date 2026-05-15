@@ -2,12 +2,14 @@ pub mod config;
 
 pub use config::{FeedConfig, RuleConfig, RuleKind, validate_rules};
 
-use std::collections::HashMap;
 use std::time::Duration;
+use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use duralumin_core::{Action, Episode, Feed, FeedId};
 use regex::Regex;
+use tracing::debug;
+use crate::config::{DynamicRuleConfig, DynamicRuleKind};
 
 // ---- Rule trait ------------------------------------------------------------
 
@@ -144,6 +146,44 @@ impl Rule for EpisodeSizeMaxRule {
     }
 }
 
+struct LastNEpisodesRule {
+    last_n_episodes: usize,
+    name: String,
+}
+impl Rule for LastNEpisodesRule {
+    fn evaluate(&self, episode: &Episode, _feed: &Feed) -> Option<Action> {
+        if self.last_n_episodes > episode.episode_no {
+            Some(Action::Dynamic)
+        } else {
+            None
+        }
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+struct DurationAgoRule {
+    duration: TimeDelta,
+    name: String,
+}
+
+impl Rule for DurationAgoRule {
+    fn evaluate(&self, episode: &Episode, _feed: &Feed) -> Option<Action> {
+        let time_since_episode = Utc::now().signed_duration_since(episode.pub_date);
+        if time_since_episode < self.duration {
+            Some(Action::Dynamic)
+        } else {
+            None
+        }
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 struct AlwaysRule {
     action: Action,
     name: String,
@@ -221,13 +261,29 @@ fn build_rule(cfg: &RuleConfig) -> Result<Box<dyn Rule>, RuleError> {
     Ok(rule)
 }
 
+fn build_dyn_rule(cfg: &DynamicRuleConfig) -> Result<Box<dyn Rule>, RuleError> {
+    Ok(match &cfg.match_ {
+        DynamicRuleKind::LastNEpisodes { last_n_episodes: n } => Box::new(LastNEpisodesRule {
+            last_n_episodes: *n,
+            name: cfg.name.clone(),
+        }),
+        DynamicRuleKind::DurationAgo { duration } => Box::new(DurationAgoRule {
+            duration: *duration,
+            name: cfg.name.clone(),
+        }),
+    })
+}
+
 // ---- RuleEngine ------------------------------------------------------------
 
 pub struct RuleEngine {
     /// Per-feed rules, sorted ascending by priority (lower = evaluated first).
     per_feed: HashMap<FeedId, Vec<Box<dyn Rule>>>,
+    dyn_per_feed: HashMap<FeedId, Vec<Box<dyn Rule>>>,
     /// Global catch-all rules, applied after per-feed rules.
     global: Vec<Box<dyn Rule>>,
+    /// Dynamic Global
+    dynamic: Vec<Box<dyn Rule>>,
     /// Fallback when no rule matches.
     default: Action,
 }
@@ -240,20 +296,34 @@ impl RuleEngine {
     /// the compiled `Vec<Box<dyn Rule>>` is already in evaluation order.
     pub fn build(
         per_feed: &[(FeedId, &[RuleConfig])],
+        dyn_feed: &[(FeedId, &[DynamicRuleConfig])],
         global: &[RuleConfig],
+        dyn_global: &[DynamicRuleConfig],
         default: Action,
     ) -> Result<Self, RuleError> {
-        let mut per_feed_map = HashMap::new();
+        let per_feed_built: HashMap<_, _> = per_feed
+            .iter()
+            .map(|(feed_id, rules)| {
+                let mut sorted_rules = rules.iter().collect::<Vec<_>>();
+                sorted_rules.sort_by_key(|r| r.priority);
+                sorted_rules
+                    .into_iter()
+                    .map(build_rule)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|rules| (*feed_id, rules))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
 
-        for (feed_id, rules) in per_feed {
-            let mut sorted: Vec<&RuleConfig> = rules.iter().collect();
-            sorted.sort_by_key(|r| r.priority);
-            let built = sorted
-                .iter()
-                .map(|r| build_rule(r))
-                .collect::<Result<_, _>>()?;
-            per_feed_map.insert(*feed_id, built);
-        }
+        let dyn_per_feed_built = dyn_feed
+            .iter()
+            .map(|(feed_id, rules)| {
+                rules
+                    .iter()
+                    .map(build_dyn_rule)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|rules| (*feed_id, rules))
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
 
         let mut global_sorted: Vec<&RuleConfig> = global.iter().collect();
         global_sorted.sort_by_key(|r| r.priority);
@@ -262,8 +332,15 @@ impl RuleEngine {
             .map(|r| build_rule(r))
             .collect::<Result<_, _>>()?;
 
+        let dynamic_built = dyn_global
+            .iter()
+            .map(build_dyn_rule)
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(Self {
-            per_feed: per_feed_map,
+            per_feed: per_feed_built,
+            dyn_per_feed: dyn_per_feed_built,
+            dynamic: dynamic_built,
             global: global_built,
             default,
         })
@@ -273,6 +350,23 @@ impl RuleEngine {
     ///
     /// Order: per-feed rules → global rules → default.
     pub fn evaluate(&self, episode: &Episode, feed: &Feed) -> Action {
+        let dynamic_rules = self
+            .dyn_per_feed
+            .get(&feed.id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        
+        for dyn_rule in dynamic_rules.into_iter().chain(&self.dynamic) {
+            if let Some(_) = dyn_rule.evaluate(episode, feed) {
+                debug!(
+                    episode_id = %episode.id,
+                    dynamic_rule = %dyn_rule.name(),
+                    "Dynamic rule matched"
+                );
+                return Action::Dynamic;
+            }
+        }
+        
         let per_feed_rules = self
             .per_feed
             .get(&feed.id)
@@ -281,7 +375,7 @@ impl RuleEngine {
 
         for rule in per_feed_rules.iter().chain(self.global.iter()) {
             if let Some(action) = rule.evaluate(episode, feed) {
-                tracing::debug!(
+                debug!(
                     episode_id = %episode.id,
                     rule = rule.name(),
                     action = %action,
@@ -291,7 +385,7 @@ impl RuleEngine {
             }
         }
 
-        tracing::debug!(
+        debug!(
             episode_id = %episode.id,
             action = %self.default,
             "no rule matched, using default"
@@ -337,6 +431,7 @@ mod tests {
             enclosure_mime: Some("audio/mpeg".into()),
             state: EpisodeState::Discovered,
             image_url: None,
+            episode_no: 0,
         }
     }
 
@@ -416,9 +511,14 @@ mod tests {
             action: Action::Download,
         }];
 
-        let engine =
-            RuleEngine::build(&[(FeedId(1), &per_feed_rules)], &global_rules, Action::Skip)
-                .unwrap();
+        let engine = RuleEngine::build(
+            &[(FeedId(1), &per_feed_rules)],
+            &[],
+            &global_rules,
+            &[],
+            Action::Skip,
+        )
+        .unwrap();
 
         let feed = make_feed(1);
         let ep = make_episode("Anything", None, None);
@@ -428,7 +528,7 @@ mod tests {
 
     #[test]
     fn engine_falls_back_to_default() {
-        let engine = RuleEngine::build(&[], &[], Action::Download).unwrap();
+        let engine = RuleEngine::build(&[], &[], &[], &[], Action::Download).unwrap();
         let feed = make_feed(99);
         let ep = make_episode("Anything", None, None);
         assert_eq!(engine.evaluate(&ep, &feed), Action::Download);

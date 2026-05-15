@@ -180,9 +180,32 @@ dura download <id> [id...]      # download specific episodes by ID
 ### Rules
 
 ```bash
-dura rules list                 # print all rules (global and per-feed)
+dura rules list                 # print all rules (global and per-feed), including dynamic rules
 dura rules check <slug>         # dry-run: show what action each episode would get
 ```
+
+### Dynamic windows
+
+Dynamic rules keep a rolling set of episodes downloaded and automatically delete episodes that age out of the window. They run before static rules on every sync.
+
+```toml
+[[feeds.dynamic]]
+name           = "keep-10-most-recent"
+match.kind     = "last_n_episodes"
+match.last_n_episodes = 10
+
+[[feeds.dynamic]]
+name           = "rolling-2-weeks"
+match.kind     = "duration_ago"
+match.duration = "14d"
+```
+
+**How it works:**
+
+1. **New episodes** — if a dynamic rule matches, the episode is queued as `dynamic` and downloaded.  If a static rule also matches, it is downloaded permanently as `complete` instead.
+2. **Each sync cycle** — the purge cycle re-evaluates every `dynamic` episode.  Episodes still in the window stay.  Episodes that have fallen outside the window have their file deleted and are marked `purged`.  Episodes that a static rule now claims are promoted to `complete` (file kept).
+
+Dynamic rules are defined per-feed (`[[feeds.dynamic]]`) or globally (`[[global_dynamics]]`). Per-feed rules are evaluated before global ones.
 
 ### Episode management
 
@@ -192,6 +215,20 @@ dura episode delete <id>        # remove from database
 dura episode delete <id> --delete-file  # also delete the file from disk
 dura check                      # list Complete episodes with missing files
 dura check --fix                # requeue them for re-download
+```
+
+### RSS restream
+
+```bash
+dura feed rebuild-rss                   # regenerate XML for all restream-enabled feeds
+dura feed rebuild-rss <slug> [slug...]  # regenerate for specific feeds
+```
+
+### Dynamic episode purge
+
+```bash
+dura purge                      # run the purge cycle for all enabled feeds
+dura purge <slug> [slug...]     # purge specific feeds only
 ```
 
 ### Quarantine
@@ -253,9 +290,34 @@ Add `?key=<token>` (or `Authorization: Bearer <token>`) to authenticate. The
 token is embedded in enclosure URLs automatically so podcast apps can fetch
 audio without separate auth headers.
 
-The restreamed feed only includes episodes that are downloaded (`Complete`) or
-queued for download. Skipped, discovered, and quarantined episodes are excluded
-so the feed presented to podcast apps is always clean.
+**Static file model:** `dura` pre-generates a `{storage.dir}/rss/<slug>.xml`
+file after each sync. The server serves this file directly with correct ETag
+and `Last-Modified` headers so podcast apps receive proper `304 Not Modified`
+responses and don't re-download the full feed on every poll.
+
+**Episode filtering** (`restream_only_matched`, default `true`)
+
+When `true` (default), the restreamed feed only includes episodes that are
+downloaded (`Complete`, `Dynamic`) or queued. Skipped, discovered, and
+quarantined episodes are excluded so the feed presented to podcast apps is
+always clean.
+
+Set `restream_only_matched = false` to expose the full feed regardless of
+download state. Episodes without a local file are proxied transparently from
+the original CDN, so any podcast app can subscribe and the full back-catalogue
+is accessible even before `dura` has downloaded everything.
+
+```toml
+[[feeds]]
+url                   = "https://feeds.example.com/my-show.rss"
+slug                  = "my-show"
+restream              = true
+restream_only_matched = false   # stream everything; proxy origin for undownloaded episodes
+```
+
+**Cover art:** Feed artwork is downloaded and cached at
+`{storage.dir}/images/<slug>/cover.<ext>` and served from your server so
+podcast apps see a stable URL even if the upstream CDN changes.
 
 **With a reverse proxy** (nginx example):
 ```nginx
@@ -266,6 +328,13 @@ location / {
 
 Set `base_url` to your public hostname. Sub-paths work too:
 `base_url = "https://example.com/podcasts"`.
+
+Rebuild RSS files after changing `base_url`, `auth_token`, or feed rules:
+
+```bash
+dura feed rebuild-rss              # all restream feeds
+dura feed rebuild-rss my-show      # one feed
+```
 
 ## Running as a service
 
@@ -339,7 +408,17 @@ complete -c dura -n '__fish_seen_subcommand_from episode; and __fish_seen_subcom
 | `[[feeds]]` | `poll_interval` | `"1h"` | How often `dura start` re-checks this feed |
 | `[[feeds]]` | `enabled` | `true` | Set `false` to pause without removing |
 | `[[feeds]]` | `restream` | `false` | Expose via the restream server |
+| `[[feeds]]` | `restream_only_matched` | `true` | `true`: only Complete/Dynamic/queued episodes; `false`: full feed with origin proxy |
 | `[[feeds]]` | `default_action` | — | Feed-level fallback after per-feed and global rules |
+| `[[feeds.rules]]` | `name` | — | Rule label for logs |
+| `[[feeds.rules]]` | `priority` | `0` | Evaluation order; lower = earlier |
+| `[[feeds.rules]]` | `action` | — | `download` / `skip` / `quarantine` |
+| `[[feeds.rules]]` | `match.kind` | — | `title_regex`, `duration_min/max`, `episode_size_max`, `published_before/after`, `always` |
+| `[[feeds.dynamic]]` | `name` | — | Rule label for logs |
+| `[[feeds.dynamic]]` | `match.kind` | — | `last_n_episodes` or `duration_ago` |
+| `[[feeds.dynamic]]` | `match.last_n_episodes` | — | Keep the N most recent episodes (used with `last_n_episodes`) |
+| `[[feeds.dynamic]]` | `match.duration` | — | Rolling window size, e.g. `"14d"` (used with `duration_ago`) |
+| `[[global_dynamics]]` | — | — | Same fields as `[[feeds.dynamic]]`, applied across all feeds |
 
 See [`examples/config.toml`](examples/config.toml) for annotated examples of
 every option.

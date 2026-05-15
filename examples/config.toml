@@ -91,6 +91,17 @@ level = "info"
 # the same sub-table path across multiple array elements, so the header form
 # breaks as soon as a feed or global_rules section has more than one rule.
 
+# --- Global dynamic rules -----------------------------------------------------
+# Applied across all feeds before per-feed static rules.
+# Useful for a sitewide "keep the last 2 weeks" policy.
+# Per-feed [[feeds.dynamic]] blocks are evaluated first and take precedence.
+
+# [[global_dynamics]]
+# name           = "rolling-2-week-window"
+# match.kind     = "duration_ago"
+# match.duration = "14d"
+
+
 # --- Global rules -------------------------------------------------------------
 # Applied after per-feed rules. Useful for cross-feed policies.
 
@@ -155,12 +166,36 @@ display_name  = "My Favourite Podcast"   # shown in `dura status` and `dura feed
 aliases       = ["mfp", "favourite"]     # `dura feed info mfp` resolves to this feed
 poll_interval = "1h"
 restream      = true   # expose via <base_url>/rss/my-favourite-podcast
+# restream_only_matched = true   # (default) only Complete, Dynamic, and queued episodes appear
+                                 # in the restreamed feed — set false to include all episodes
+                                 # and proxy audio for those not yet downloaded
 
 [[feeds.rules]]
 name          = "download-all"
 priority      = 0
 action        = "download"
 match.kind    = "always"
+
+# Dynamic windows keep the N most recent (or most recently published) episodes
+# downloaded and delete the rest automatically on each sync cycle.
+# A dynamic episode's file is kept while it's in the window, then deleted when
+# it falls out.  If a static rule also matches the episode (e.g. "download-all"
+# above), it gets promoted to a permanent Complete download instead of being purged.
+#
+# Two kinds:
+#   last_n_episodes  — keep the N episodes newest by feed position
+#   duration_ago     — keep episodes published within a rolling time window
+#
+# Only one dynamic rule needs to match for the episode to be kept.
+[[feeds.dynamic]]
+name           = "keep-10-most-recent"
+match.kind     = "last_n_episodes"
+match.last_n_episodes = 10
+
+# [[feeds.dynamic]]
+# name           = "keep-last-2-weeks"
+# match.kind     = "duration_ago"
+# match.duration = "14d"
 
 
 # --- Feed: only recent episodes ------------------------------------------------

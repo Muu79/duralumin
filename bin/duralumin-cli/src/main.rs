@@ -1,4 +1,6 @@
 mod config;
+mod rss_gen;
+mod sync;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,14 +15,14 @@ use tokio::sync::Semaphore;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
 
-use duralumin_core::{Action, EpisodeState, ext_from_mime, sanitize_title};
+use duralumin_core::{Action, Episode, EpisodeId, EpisodeState, FeedId, ext_from_mime, sanitize_title};
 use duralumin_downloader::{DownloadResult, Downloader, DownloaderConfig};
 use duralumin_feed::FeedFetcher;
 use duralumin_metadata::write_tags;
+use duralumin_rules::config::{DynamicRuleConfig, DynamicRuleKind, RuleConfig};
 use duralumin_rules::{RuleEngine, config::FeedConfig};
 use duralumin_storage::{Db, EpisodeFilter};
 use rustls::crypto::ring;
-
 // ---- Config conversions ----------------------------------------------------
 
 impl From<&config::DownloaderConfig> for DownloaderConfig {
@@ -77,6 +79,12 @@ enum Command {
     Status,
     /// Check for Complete episodes whose local file has been deleted.
     Check(CheckArgs),
+    /// Run the purge cycle for one or all feeds, deleting Dynamic episodes that
+    /// have fallen outside their rolling window.
+    Purge {
+        /// Feed slugs to purge (all enabled feeds if omitted).
+        slugs: Vec<String>,
+    },
     /// Print a shell completion script to stdout.
     ///
     /// Usage: dura completions fish > ~/.config/fish/completions/dura.fish
@@ -114,6 +122,12 @@ enum FeedSub {
     Reimport {
         /// Feed slug to scan, or omit to scan all feeds.
         slug: Option<String>,
+    },
+    /// Regenerate the static RSS file(s) served by the restream server.
+    /// Useful after changing base_url, auth_token, or cover_image in config.
+    RebuildRss {
+        /// Feed slugs to rebuild (all restream-enabled feeds if omitted).
+        slugs: Vec<String>,
     },
 }
 
@@ -393,6 +407,10 @@ async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
                 let resolved = slug.as_deref().map(|s| resolve_slug(cfg, s));
                 cmd_feed_reimport(cfg, db, resolved.as_deref()).await
             }
+            FeedSub::RebuildRss { slugs } => {
+                let resolved: Vec<String> = slugs.iter().map(|s| resolve_slug(cfg, s)).collect();
+                cmd_rebuild_rss(cfg, db, resolved).await
+            }
         },
         Command::Episode(EpisodeArgs { sub }) => match sub {
             EpisodeSub::List {
@@ -424,9 +442,7 @@ async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
             QuarantineSub::Retry { id } => cmd_requeue(db, &id).await,
         },
         Command::Rules(RulesArgs { sub }) => match sub {
-            RulesSub::Check { slug } => {
-                cmd_rules_check(cfg, db, &resolve_slug(cfg, &slug)).await
-            }
+            RulesSub::Check { slug } => cmd_rules_check(cfg, db, &resolve_slug(cfg, &slug)).await,
             RulesSub::List => cmd_rules_list(cfg),
         },
         Command::Config(ConfigArgs { sub }) => match sub {
@@ -440,6 +456,10 @@ async fn run(command: Command, cfg: &config::Config, db: &Db) -> Result<()> {
         },
         Command::Status => cmd_status(cfg, db).await,
         Command::Check(CheckArgs { fix }) => cmd_check(db, fix).await,
+        Command::Purge { slugs } => {
+            let resolved: Vec<String> = slugs.iter().map(|s| resolve_slug(cfg, s)).collect();
+            cmd_purge(cfg, db, resolved).await
+        }
         Command::Completions { .. } => unreachable!("handled before DB open"),
     }
 }
@@ -452,6 +472,8 @@ async fn cmd_sync(cfg: &config::Config, db: &Db, args: SyncArgs) -> Result<()> {
         &cfg.downloader.user_agent,
         cfg.downloader.accept_invalid_certs,
     );
+
+    let rss_ctx = build_rss_ctx(cfg);
 
     // Resolve any aliases to canonical slugs before filtering.
     let resolved_slugs: Vec<String> = args.slugs.iter().map(|s| resolve_slug(cfg, s)).collect();
@@ -466,11 +488,14 @@ async fn cmd_sync(cfg: &config::Config, db: &Db, args: SyncArgs) -> Result<()> {
     };
 
     for feed_cfg in feeds_to_sync {
-        sync_one_feed(feed_cfg, db, &engine, &fetcher).await;
-    }
-
-    if args.recheck {
-        recheck_episodes(db, &engine, &resolved_slugs).await?;
+        sync::sync_one_feed(feed_cfg, db, &engine, &fetcher, args.recheck).await;
+        if feed_cfg.restream {
+            if let Some(ctx) = &rss_ctx {
+                if let Err(e) = rss_gen::generate_rss_for_feed(feed_cfg, db, ctx).await {
+                    tracing::warn!(slug = %feed_cfg.slug, error = %e, "RSS generation failed after sync");
+                }
+            }
+        }
     }
 
     if !args.feeds_only {
@@ -479,63 +504,6 @@ async fn cmd_sync(cfg: &config::Config, db: &Db, args: SyncArgs) -> Result<()> {
     Ok(())
 }
 
-/// Sync a single feed: fetch, upsert episodes, evaluate rules on new ones.
-/// Errors are logged and swallowed so one bad feed never stops the others.
-async fn sync_one_feed(feed_cfg: &FeedConfig, db: &Db, engine: &RuleEngine, fetcher: &FeedFetcher) {
-    let mut feed = feed_from_config(feed_cfg);
-
-    let feed_id = match db.upsert_feed(&feed).await {
-        Ok(id) => id,
-        Err(e) => {
-            tracing::error!(slug = %feed.slug, error = %e, "failed to upsert feed");
-            return;
-        }
-    };
-    feed.id = feed_id;
-
-    info!(slug = %feed.slug, "syncing feed");
-
-    let (meta, mut episodes) = match fetcher.fetch(&feed).await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(slug = %feed.slug, error = %e, "feed fetch failed");
-            return;
-        }
-    };
-
-    feed.title = meta.title.or(feed.title);
-    feed.etag = meta.etag;
-    feed.last_modified = meta.last_modified;
-    feed.image_url = meta.image_url;
-    feed.last_fetched_at = Some(Utc::now());
-    if let Err(e) = db.upsert_feed(&feed).await {
-        tracing::error!(slug = %feed.slug, error = %e, "failed to update feed metadata");
-    }
-
-    let mut new_episodes = 0;
-    for ep in &mut episodes {
-        ep.feed_id = feed_id;
-        let is_new = match db.upsert_episode(ep).await {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::error!(slug = %feed.slug, episode_id = %ep.id, error = %e, "failed to upsert episode");
-                continue;
-            }
-        };
-        if is_new {
-            new_episodes += 1;
-            let action = engine.evaluate(ep, &feed);
-            info!(episode_id = %ep.id, title = %ep.title, ?action, "new episode, rule evaluated");
-            if let Err(e) = db
-                .update_episode_state(&ep.id, &EpisodeState::Matched(action))
-                .await
-            {
-                tracing::error!(slug = %feed.slug, episode_id = %ep.id, error = %e, "failed to set episode state");
-            }
-        }
-    }
-    info!(slug = %feed.slug, total = episodes.len(), new = new_episodes, "feed sync complete");
-}
 
 // ---- feed list -------------------------------------------------------------
 
@@ -550,7 +518,7 @@ async fn cmd_feed_list(cfg: &config::Config, db: &Db) -> Result<()> {
     for f in feeds {
         let last = f
             .last_fetched_at
-            .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+            .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_else(|| "never".into());
         // Display name: config display_name > RSS title > "—"
         let name = cfg
@@ -617,7 +585,6 @@ async fn cmd_episode_list(
 // ---- requeue (shared by episode requeue + quarantine retry) ----------------
 
 async fn cmd_requeue(db: &Db, id: &str) -> Result<()> {
-    use duralumin_core::EpisodeId;
     let eid = EpisodeId::from(id.to_string());
     let ep = db
         .get_episode(&eid)
@@ -625,6 +592,7 @@ async fn cmd_requeue(db: &Db, id: &str) -> Result<()> {
         .with_context(|| format!("episode {id:?} not found"))?;
     db.update_episode_state(&ep.id, &EpisodeState::Matched(Action::Download))
         .await?;
+    db.enqueue(&ep.id, Action::Download).await?;
     println!("{} episode {}", "Re-queued".green(), ep.id.short());
     Ok(())
 }
@@ -638,23 +606,51 @@ async fn cmd_start(cfg: &config::Config, db: &Db) -> Result<()> {
     // Warn about Complete episodes whose files have gone missing.
     warn_missing_files(db).await;
 
-    // Start the RSS restream server if any feed has restream=true and [server] is configured.
-    if cfg.feeds.iter().any(|f| f.restream) {
-        match &cfg.server {
-            Some(srv_cfg) => {
-                let server_db = db.clone();
-                let server_config = srv_cfg.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = duralumin_server::serve(server_db, server_config).await {
-                        tracing::error!(error = %e, "RSS server exited with error");
+    let rss_dir = cfg.storage.dir.join("rss");
+    let images_dir = cfg.storage.dir.join("images");
+
+    // Build RssContext if the server is configured and any feed uses restream.
+    let rss_ctx: Option<Arc<rss_gen::RssContext>> =
+        if cfg.feeds.iter().any(|f| f.restream) {
+            match &cfg.server {
+                Some(srv_cfg) => {
+                    let ctx = Arc::new(rss_gen::RssContext {
+                        server_cfg: Arc::new(srv_cfg.clone()),
+                        rss_dir: rss_dir.clone(),
+                        images_dir: images_dir.clone(),
+                        http: reqwest::Client::new(),
+                    });
+
+                    // Pre-generate RSS for all restream feeds on startup.
+                    for feed_cfg in cfg.feeds.iter().filter(|f| f.restream && f.enabled) {
+                        if let Err(e) = rss_gen::generate_rss_for_feed(feed_cfg, db, &ctx).await {
+                            tracing::warn!(slug = %feed_cfg.slug, error = %e, "startup RSS generation failed");
+                        }
                     }
-                });
+
+                    // Start the HTTP server.
+                    let server_db = db.clone();
+                    let server_config = srv_cfg.clone();
+                    let rss_dir2 = rss_dir.clone();
+                    let images_dir2 = images_dir.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = duralumin_server::serve(server_db, server_config, rss_dir2, images_dir2).await {
+                            tracing::error!(error = %e, "RSS server exited with error");
+                        }
+                    });
+
+                    Some(ctx)
+                }
+                None => {
+                    tracing::warn!(
+                        "some feeds have restream=true but no [server] block is configured — restreaming disabled"
+                    );
+                    None
+                }
             }
-            None => tracing::warn!(
-                "some feeds have restream=true but no [server] block is configured — restreaming disabled"
-            ),
-        }
-    }
+        } else {
+            None
+        };
 
     let engine = Arc::new(build_engine(cfg, db).await?);
     let fetcher = Arc::new(FeedFetcher::new(
@@ -664,7 +660,6 @@ async fn cmd_start(cfg: &config::Config, db: &Db) -> Result<()> {
     let downloader = Arc::new(Downloader::new(DownloaderConfig::from(&cfg.downloader)));
     let semaphore = Arc::new(Semaphore::new(cfg.downloader.concurrent_downloads as usize));
     let library = cfg.storage.library();
-    let max_retries = cfg.downloader.max_retries;
 
     let mut tasks = tokio::task::JoinSet::new();
 
@@ -673,13 +668,21 @@ async fn cmd_start(cfg: &config::Config, db: &Db) -> Result<()> {
         let db = db.clone();
         let engine = Arc::clone(&engine);
         let fetcher = Arc::clone(&fetcher);
+        let rss_ctx = rss_ctx.clone();
 
         tasks.spawn(async move {
             let mut ticker = tokio::time::interval(feed_cfg.poll_interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 ticker.tick().await;
-                sync_one_feed(&feed_cfg, &db, &engine, &fetcher).await;
+                sync::sync_one_feed(&feed_cfg, &db, &engine, &fetcher, false).await;
+                if feed_cfg.restream {
+                    if let Some(ctx) = &rss_ctx {
+                        if let Err(e) = rss_gen::generate_rss_for_feed(&feed_cfg, &db, ctx).await {
+                            tracing::warn!(slug = %feed_cfg.slug, error = %e, "RSS generation failed after sync");
+                        }
+                    }
+                }
             }
         });
     }
@@ -696,7 +699,7 @@ async fn cmd_start(cfg: &config::Config, db: &Db) -> Result<()> {
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 ticker.tick().await;
-                drain_downloads(&db, &downloader, &semaphore, &library, max_retries).await;
+                drain_downloads(&db, &downloader, &semaphore, &library).await;
             }
         });
     }
@@ -717,7 +720,7 @@ async fn cmd_download(cfg: &config::Config, db: &Db, ids: Vec<String>) -> Result
     let library = cfg.storage.library();
 
     let episodes = if ids.is_empty() {
-        db.download_queue(cfg.downloader.max_retries).await?
+        db.get_queue().await?
     } else {
         let mut eps = Vec::new();
         for id in &ids {
@@ -740,15 +743,14 @@ async fn cmd_download(cfg: &config::Config, db: &Db, ids: Vec<String>) -> Result
     Ok(())
 }
 
-/// Fetch the full download queue and process it. Used by the daemon loop.
+/// Fetch the download queue and process it. Used by the daemon loop.
 async fn drain_downloads(
     db: &Db,
     downloader: &Arc<Downloader>,
     semaphore: &Arc<Semaphore>,
     library: &std::path::Path,
-    max_retries: u8,
 ) {
-    let episodes = match db.download_queue(max_retries).await {
+    let episodes = match db.get_queue().await {
         Ok(eps) => eps,
         Err(e) => {
             tracing::error!(error = %e, "failed to load download queue");
@@ -766,7 +768,7 @@ async fn run_downloads(
     downloader: &Arc<Downloader>,
     semaphore: &Arc<Semaphore>,
     library: &std::path::Path,
-    episodes: Vec<duralumin_core::Episode>,
+    episodes: Vec<Episode>,
 ) {
     if !library.exists() {
         if let Err(e) = std::fs::create_dir_all(library) {
@@ -817,7 +819,7 @@ async fn run_downloads(
 
             // Guard against re-downloading a file that already exists on disk
             // (happens when a previous DB write succeeded for the file but the
-            // state update failed, leaving the episode queued again).
+            // state update failed, leaving the episode still in the queue).
             let stem = sanitize_title(&ep.title);
             let ext = ext_from_mime(ep.enclosure_mime.as_deref(), ep.enclosure_url.as_str());
             let existing = feed_dir.join(format!("{stem}.{ext}"));
@@ -828,17 +830,27 @@ async fn run_downloads(
                     .and_then(|m| m.modified().ok())
                     .map(chrono::DateTime::<Utc>::from)
                     .unwrap_or_else(Utc::now);
-                let state = EpisodeState::Complete {
-                    path: existing.clone(),
-                    downloaded_at,
-                    sha256: String::new(),
+                let state = match &ep.state {
+                    EpisodeState::Matched(Action::Dynamic) => EpisodeState::Dynamic {
+                        path: existing.clone(),
+                        downloaded_at,
+                        sha256: String::new(),
+                    },
+                    _ => EpisodeState::Complete {
+                        path: existing.clone(),
+                        downloaded_at,
+                        sha256: String::new(),
+                    },
                 };
                 match db.update_episode_state(&ep.id, &state).await {
-                    Ok(()) => tracing::info!(
-                        episode_id = %ep.id,
-                        path = %existing.display(),
-                        "file already on disk, marked complete without re-downloading"
-                    ),
+                    Ok(()) => {
+                        tracing::info!(
+                            episode_id = %ep.id,
+                            path = %existing.display(),
+                            "file already on disk, marked complete without re-downloading"
+                        );
+                        db.dequeue(&ep.id).await.ok();
+                    }
                     Err(e) => tracing::error!(
                         episode_id = %ep.id,
                         error = %e,
@@ -857,15 +869,23 @@ async fn run_downloads(
 
             match result {
                 Ok(DownloadResult { path, sha256, .. }) => {
-                    let complete = EpisodeState::Complete {
-                        path: path.clone(),
-                        downloaded_at: Utc::now(),
-                        sha256,
+                    let new_state = match &ep.state {
+                        EpisodeState::Matched(Action::Dynamic) => EpisodeState::Dynamic {
+                            path: path.clone(),
+                            downloaded_at: Utc::now(),
+                            sha256,
+                        },
+                        _ => EpisodeState::Complete {
+                            path: path.clone(),
+                            downloaded_at: Utc::now(),
+                            sha256,
+                        },
                     };
-                    if let Err(e) = db.update_episode_state(&ep.id, &complete).await {
-                        tracing::error!(episode_id = %ep.id, error = %e, "failed to persist Complete state");
+                    if let Err(e) = db.update_episode_state(&ep.id, &new_state).await {
+                        tracing::error!(episode_id = %ep.id, error = %e, "failed to persist download state");
                         return;
                     }
+                    db.dequeue(&ep.id).await.ok();
                     let cover = fetch_cover(&ep, &feed).await;
                     if let Err(e) = write_tags(&path, &ep, &feed, cover.as_deref()) {
                         tracing::warn!(episode_id = %ep.id, error = %e, "tag write failed");
@@ -873,6 +893,14 @@ async fn run_downloads(
                 }
                 Err(e) => {
                     tracing::error!(episode_id = %ep.id, error = %e, "download failed after retries");
+                    let quarantine = EpisodeState::Quarantined {
+                        reason: e.reason().to_string(),
+                        last_error: e.to_string(),
+                    };
+                    if let Err(db_err) = db.update_episode_state(&ep.id, &quarantine).await {
+                        tracing::error!(episode_id = %ep.id, error = %db_err, "failed to quarantine episode");
+                    }
+                    db.dequeue(&ep.id).await.ok();
                 }
             }
         }));
@@ -1023,7 +1051,7 @@ async fn cmd_feed_info(cfg: &config::Config, db: &Db, slug: &str) -> Result<()> 
 
     let last = feed
         .last_fetched_at
-        .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
+        .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_else(|| "never".into());
 
     // Display name: config display_name > RSS title > slug
@@ -1032,11 +1060,7 @@ async fn cmd_feed_info(cfg: &config::Config, db: &Db, slug: &str) -> Result<()> 
         .or(feed.title.as_deref())
         .unwrap_or(&feed.slug);
 
-    println!(
-        "{} {}",
-        display.bold(),
-        format!("({})", feed.slug).dimmed()
-    );
+    println!("{} {}", display.bold(), format!("({})", feed.slug).dimmed());
     println!("  {} {}", "URL:".dimmed(), feed.url);
     println!("  {} {}", "Last fetched:".dimmed(), last);
     if let Some(cf) = config_feed
@@ -1081,7 +1105,7 @@ async fn cmd_feed_info(cfg: &config::Config, db: &Db, slug: &str) -> Result<()> 
         let mut table = make_table();
         table.set_header(["ID", "DATE", "STATE", "TITLE"]);
         for ep in recent {
-            let date = ep.pub_date.format("%Y-%m-%d").to_string();
+            let date = ep.pub_date.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string();
             let kind = ep.state.kind_name().to_lowercase();
             table.add_row([
                 Cell::new(ep.id.short()),
@@ -1221,7 +1245,21 @@ fn cmd_rules_list(cfg: &config::Config) -> Result<()> {
         }
     }
 
-    fn rules_table(rules: &[duralumin_rules::config::RuleConfig]) -> Table {
+    fn fmt_dynamic_kind(dk: &DynamicRuleKind) -> String {
+        match dk {
+            DynamicRuleKind::DurationAgo { duration } => {
+                format!(
+                    "published within the last {}",
+                    humantime::format_duration(duration.to_std().unwrap())
+                )
+            }
+            DynamicRuleKind::LastNEpisodes { last_n_episodes: n } => {
+                format!("among the {} most recent episodes", n)
+            }
+        }
+    }
+
+    fn rules_table(rules: &[RuleConfig]) -> Table {
         let mut t = make_table();
         t.set_header(["PRI", "NAME", "MATCH", "ACTION"]);
         for r in rules {
@@ -1241,9 +1279,25 @@ fn cmd_rules_list(cfg: &config::Config) -> Result<()> {
         t
     }
 
+    fn dynamic_rules_table(dyn_rules: &[DynamicRuleConfig]) -> Table {
+        let mut t = make_table();
+        t.set_header(["NAME", "MATCH"]);
+        for dr in dyn_rules {
+            t.add_row([Cell::new(&dr.name), Cell::new(fmt_dynamic_kind(&dr.match_))]);
+        }
+        t
+    }
+
+    println!("{}", "Global Dynamic Rules".bold());
+    if cfg.global_dynamics.is_empty() {
+        println!("\t{}", "(none)".dimmed())
+    } else {
+        println!("{}", dynamic_rules_table(&cfg.global_dynamics))
+    }
+
     println!("{}", "Global rules:".bold());
     if cfg.global_rules.is_empty() {
-        println!("  {}", "(none)".dimmed());
+        println!("\t{}", "(none)".dimmed());
     } else {
         println!("{}", rules_table(&cfg.global_rules));
     }
@@ -1261,10 +1315,18 @@ fn cmd_rules_list(cfg: &config::Config) -> Result<()> {
         } else {
             println!("{} {}", "Feed:".bold(), feed_label);
         }
+
         if feed.rules.is_empty() {
-            println!("  {}", "(none — global rules apply)".dimmed());
+            println!("\t{}", "(none — global rules apply)".dimmed());
         } else {
             println!("{}", rules_table(&feed.rules));
+        }
+
+        println!("{}", "Dynamic rules:".bold());
+        if feed.dynamic.is_empty() {
+            println!("\t{}", "(none)".dimmed())
+        } else {
+            println!("{}", dynamic_rules_table(&feed.dynamic))
         }
         if let Some(action) = feed.default_action {
             println!("  {} {}", "catch-all:".dimmed(), action);
@@ -1287,7 +1349,12 @@ async fn cmd_check(db: &Db, fix: bool) -> Result<()> {
 
     let complete: Vec<_> = all
         .iter()
-        .filter(|ep| matches!(&ep.state, EpisodeState::Complete { .. }))
+        .filter(|ep| {
+            matches!(
+                &ep.state,
+                EpisodeState::Complete { .. } | EpisodeState::Dynamic { .. }
+            )
+        })
         .collect();
 
     println!(
@@ -1325,6 +1392,7 @@ async fn cmd_check(db: &Db, fix: bool) -> Result<()> {
         for (ep, _) in &missing {
             db.update_episode_state(&ep.id, &EpisodeState::Matched(Action::Download))
                 .await?;
+            db.enqueue(&ep.id, Action::Download).await?;
         }
         println!(
             "{} {} episode(s) — run `dura download` to fetch.",
@@ -1369,78 +1437,6 @@ async fn warn_missing_files(db: &Db) {
             "run `dura check --fix` to requeue missing episodes for re-download"
         );
     }
-}
-
-// ---- Recheck pending episodes against current rules -----------------------
-
-async fn recheck_episodes(db: &Db, engine: &RuleEngine, slugs: &[String]) -> Result<()> {
-    let feeds: Vec<_> = if slugs.is_empty() {
-        db.list_feeds().await?
-    } else {
-        let mut out = Vec::new();
-        for slug in slugs {
-            if let Some(f) = db.get_feed_by_slug(slug).await? {
-                out.push(f);
-            }
-        }
-        out
-    };
-
-    let mut reassigned = 0usize;
-    let mut table = make_table();
-    table.set_header(["ID", "TITLE", "OLD", "NEW"]);
-
-    for feed in &feeds {
-        let eps = db
-            .list_episodes(EpisodeFilter {
-                feed_id: Some(feed.id),
-                ..Default::default()
-            })
-            .await?;
-        for ep in &eps {
-            // Only re-evaluate episodes that haven't been acted on yet.
-            let old_action = match &ep.state {
-                EpisodeState::Discovered => None,
-                EpisodeState::Matched(a) => Some(*a),
-                _ => continue,
-            };
-            let new_action = engine.evaluate(ep, feed);
-            if old_action == Some(new_action) {
-                continue;
-            }
-
-            db.update_episode_state(&ep.id, &EpisodeState::Matched(new_action))
-                .await?;
-            reassigned += 1;
-
-            let old_label = old_action
-                .map(|a| a.to_string())
-                .unwrap_or_else(|| "discovered".into());
-            let new_label = new_action.to_string();
-            let new_cell = match new_label.as_str() {
-                "download" => Cell::new(&new_label).fg(Color::Green),
-                "skip" => Cell::new(&new_label).fg(Color::DarkGrey),
-                _ => Cell::new(&new_label),
-            };
-            table.add_row([
-                Cell::new(ep.id.short()),
-                Cell::new(&ep.title),
-                Cell::new(&old_label).fg(Color::DarkGrey),
-                new_cell,
-            ]);
-        }
-    }
-
-    if reassigned == 0 {
-        println!(
-            "{}",
-            "Recheck: all pending episodes already match current rules.".dimmed()
-        );
-    } else {
-        println!("{}", table);
-        println!("{} episode(s) reassigned.", reassigned.to_string().yellow());
-    }
-    Ok(())
 }
 
 // ---- Episode delete --------------------------------------------------------
@@ -1542,21 +1538,22 @@ struct EpisodeCounts {
 }
 
 impl EpisodeCounts {
-    fn tally(episodes: &[duralumin_core::Episode]) -> Self {
+    fn tally(episodes: &[Episode]) -> Self {
         let mut c = Self::default();
         for ep in episodes {
             match &ep.state {
-                EpisodeState::Complete { path, .. } => {
+                EpisodeState::Complete { path, .. } |
+                EpisodeState::Dynamic { path, .. } => {
                     if path.exists() {
                         c.dl += 1;
                     } else {
                         c.missing += 1;
                     }
                 }
-                EpisodeState::Matched(Action::Download) | EpisodeState::Failed { .. } => {
+                EpisodeState::Matched(Action::Download | Action::Dynamic) | EpisodeState::Failed { .. } => {
                     c.queued += 1
                 }
-                EpisodeState::Matched(Action::Skip) => c.skipped += 1,
+                EpisodeState::Matched(Action::Skip | Action::Purge) | EpisodeState::Purged { .. } => c.skipped += 1,
                 EpisodeState::Quarantined { .. } => c.quarantined += 1,
                 _ => {}
             }
@@ -1583,6 +1580,67 @@ fn state_cell(label: &str) -> Cell {
     }
 }
 
+// ---- RSS generation helpers ------------------------------------------------
+
+/// Build an `RssContext` if the config has a `[server]` block; returns `None` otherwise.
+fn build_rss_ctx(cfg: &config::Config) -> Option<rss_gen::RssContext> {
+    cfg.server.as_ref().map(|srv_cfg| rss_gen::RssContext {
+        server_cfg: std::sync::Arc::new(srv_cfg.clone()),
+        rss_dir: cfg.storage.dir.join("rss"),
+        images_dir: cfg.storage.dir.join("images"),
+        http: reqwest::Client::new(),
+    })
+}
+
+async fn cmd_rebuild_rss(cfg: &config::Config, db: &Db, slugs: Vec<String>) -> Result<()> {
+    let ctx = build_rss_ctx(cfg)
+        .with_context(|| "no [server] block in config — RSS restreaming not configured")?;
+
+    let feeds: Vec<&FeedConfig> = if slugs.is_empty() {
+        cfg.feeds.iter().filter(|f| f.restream).collect()
+    } else {
+        cfg.feeds
+            .iter()
+            .filter(|f| slugs.contains(&f.slug))
+            .collect()
+    };
+
+    if feeds.is_empty() {
+        println!("{}", "No restream-enabled feeds to rebuild.".dimmed());
+        return Ok(());
+    }
+
+    for feed_cfg in feeds {
+        rss_gen::generate_rss_for_feed(feed_cfg, db, &ctx)
+            .await
+            .with_context(|| format!("failed to regenerate RSS for {}", feed_cfg.slug))?;
+        println!("{} {}", "Rebuilt".green(), feed_cfg.slug);
+    }
+    Ok(())
+}
+
+async fn cmd_purge(cfg: &config::Config, db: &Db, slugs: Vec<String>) -> Result<()> {
+    let engine = build_engine(cfg, db).await?;
+    let fetcher = FeedFetcher::new(
+        &cfg.downloader.user_agent,
+        cfg.downloader.accept_invalid_certs,
+    );
+
+    let feeds: Vec<&FeedConfig> = if slugs.is_empty() {
+        cfg.feeds.iter().filter(|f| f.enabled).collect()
+    } else {
+        cfg.feeds
+            .iter()
+            .filter(|f| slugs.contains(&f.slug))
+            .collect()
+    };
+
+    for feed_cfg in feeds {
+        sync::purge_one_feed(feed_cfg, db, &engine, &fetcher).await;
+    }
+    Ok(())
+}
+
 // ---- Helpers ---------------------------------------------------------------
 
 /// Construct a placeholder `Feed` (id = 0, no metadata) from config for initial upsert.
@@ -1603,10 +1661,9 @@ fn feed_from_config(fc: &FeedConfig) -> duralumin_core::Feed {
 /// Build a `RuleEngine` from the loaded config, upserting feeds first so they
 /// have real IDs.
 async fn build_engine(cfg: &config::Config, db: &Db) -> Result<RuleEngine> {
-    let mut per_feed: Vec<(
-        duralumin_core::FeedId,
-        Vec<duralumin_rules::config::RuleConfig>,
-    )> = Vec::new();
+    let mut per_feed: Vec<(duralumin_core::FeedId, Vec<RuleConfig>)> = Vec::new();
+
+    let mut dyn_per_feed = Vec::new();
 
     for feed_cfg in &cfg.feeds {
         let feed = feed_from_config(feed_cfg);
@@ -1616,9 +1673,10 @@ async fn build_engine(cfg: &config::Config, db: &Db) -> Result<RuleEngine> {
             .with_context(|| format!("upsert feed {}", feed_cfg.slug))?;
 
         let mut rules = feed_cfg.rules.clone();
+        let dyn_rules = feed_cfg.dynamic.clone();
         if let Some(action) = feed_cfg.default_action {
             // Append a synthetic catch-all that short-circuits global rules.
-            rules.push(duralumin_rules::config::RuleConfig {
+            rules.push(RuleConfig {
                 name: format!("__feed_default_{}", feed_cfg.slug),
                 priority: i32::MAX,
                 match_: duralumin_rules::config::RuleKind::Always,
@@ -1626,25 +1684,34 @@ async fn build_engine(cfg: &config::Config, db: &Db) -> Result<RuleEngine> {
             });
         }
         per_feed.push((id, rules));
+        dyn_per_feed.push((id, dyn_rules));
     }
 
-    let pairs: Vec<(
-        duralumin_core::FeedId,
-        &[duralumin_rules::config::RuleConfig],
-    )> = per_feed
+    let pairs: Vec<(FeedId, &[RuleConfig])> = per_feed
         .iter()
         .map(|(id, rules)| (*id, rules.as_slice()))
         .collect();
 
-    let engine = RuleEngine::build(&pairs, &cfg.global_rules, cfg.defaults.action_on_no_match)
-        .context("building rule engine")?;
+    let dyn_pairs: Vec<(FeedId, &[DynamicRuleConfig])> = dyn_per_feed
+        .iter()
+        .map(|(id, rules)| (*id, rules.as_slice()))
+        .collect();
+
+    let engine = RuleEngine::build(
+        &pairs,
+        &dyn_pairs,
+        &cfg.global_rules,
+        &cfg.global_dynamics,
+        cfg.defaults.action_on_no_match,
+    )
+    .context("building rule engine")?;
 
     Ok(engine)
 }
 
 /// Fetch cover art bytes from `episode.image_url`, falling back to `feed.image_url`.
 async fn fetch_cover(
-    episode: &duralumin_core::Episode,
+    episode: &Episode,
     feed: &duralumin_core::Feed,
 ) -> Option<Vec<u8>> {
     let url = episode.image_url.as_ref().or(feed.image_url.as_ref())?;

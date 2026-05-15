@@ -6,7 +6,9 @@ const DEFAULT_CONFIG: &str = include_str!("default_config.toml");
 use serde::{Deserialize, Deserializer, de};
 
 use duralumin_core::Action;
-use duralumin_rules::config::{FeedConfig, RuleConfig, validate_rules};
+use duralumin_rules::config::{
+    DynamicRuleConfig, FeedConfig, RuleConfig, validate_dynamic_rules, validate_rules,
+};
 pub use duralumin_server::ServerConfig;
 
 // ---- Serde helpers ---------------------------------------------------------
@@ -83,6 +85,8 @@ pub struct Config {
     pub feeds: Vec<FeedConfig>,
     #[serde(default)]
     pub global_rules: Vec<RuleConfig>,
+    #[serde(default)]
+    pub global_dynamics: Vec<DynamicRuleConfig>,
     pub server: Option<ServerConfig>,
 }
 
@@ -226,15 +230,21 @@ fn validate(cfg: &Config) -> Result<(), ConfigError> {
         }
     }
 
-    // Per-feed rule validation (regex compile, etc.)
+    // Per-feed rule validation (regex compile, dynamic rule sanity checks, etc.)
     for feed in &cfg.feeds {
         for msg in validate_rules(&feed.rules) {
+            errors.push(format!("[feed {}] {msg}", feed.slug));
+        }
+        for msg in validate_dynamic_rules(&feed.dynamic) {
             errors.push(format!("[feed {}] {msg}", feed.slug));
         }
     }
 
     // Global rule validation
     for msg in validate_rules(&cfg.global_rules) {
+        errors.push(format!("[global] {msg}"));
+    }
+    for msg in validate_dynamic_rules(&cfg.global_dynamics) {
         errors.push(format!("[global] {msg}"));
     }
 
