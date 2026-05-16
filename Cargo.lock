@@ -764,13 +764,11 @@ dependencies = [
  "reqwest",
  "rustls",
  "serde",
- "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "toml",
  "tracing",
  "tracing-subscriber",
- "url",
 ]
 
 [[package]]
@@ -780,9 +778,7 @@ dependencies = [
  "chrono",
  "hex",
  "serde",
- "serde_json",
  "sha2",
- "thiserror 2.0.18",
  "url",
 ]
 
@@ -790,7 +786,6 @@ dependencies = [
 name = "duralumin-downloader"
 version = "0.2.0"
 dependencies = [
- "anyhow",
  "chrono",
  "duralumin-core",
  "hex",
@@ -805,13 +800,10 @@ dependencies = [
 name = "duralumin-feed"
 version = "0.2.0"
 dependencies = [
- "anyhow",
- "chrono",
  "duralumin-core",
  "feed-rs",
  "reqwest",
  "thiserror 2.0.18",
- "tokio",
  "tracing",
  "url",
 ]
@@ -820,7 +812,6 @@ dependencies = [
 name = "duralumin-metadata"
 version = "0.2.0"
 dependencies = [
- "anyhow",
  "chrono",
  "duralumin-core",
  "lofty",
@@ -849,7 +840,6 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
- "chrono",
  "duralumin-core",
  "duralumin-storage",
  "reqwest",

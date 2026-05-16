@@ -6,9 +6,7 @@ edition.workspace = true
 
 [dependencies]
 serde      = { workspace = true }
-serde_json = { workspace = true }
 url        = { workspace = true }
 chrono     = { workspace = true }
 sha2       = { workspace = true }
 hex        = { workspace = true }
-thiserror  = { workspace = true }
