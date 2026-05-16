@@ -1,6 +1,9 @@
 [workspace]
 members = ["cargo:."]
 
+[workspace.metadata.dist]
+cache-builds = true
+
 # Config for 'dist'
 [dist]
 # CI backends to support
@@ -38,4 +41,16 @@ install-updater = false
 # aws-lc-sys's __SSE2__ preprocessor requirement.
 [dist.github-custom-runners]
 i686-pc-windows-msvc = "windows-2022"
+
+# Debian packages built for the two architectures that matter for modern
+# Linux servers. 32-bit targets are excluded: armv7/i686 are not realistically
+# deployed as server hardware. sqlite is bundled so no multiarch apt setup
+# is needed; only gcc-aarch64-linux-gnu is installed for the arm64 cross-link.
+[[dist.extra-artifacts]]
+artifacts = [
+  "dist/deb/dura-amd64.deb",
+  "dist/deb/dura-arm64.deb",
+  "dist/deb/dura.service",
+]
+build = ["bash", "contrib/build-debs.sh"]
 
